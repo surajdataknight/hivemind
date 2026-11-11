@@ -1,0 +1,1764 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "HiveMind simulated business",
+    "description": "read apis of the simulated quick-commerce grocery business. money is integer paise; times are rfc 3339 utc; errors are rfc 9457 problem details. every body carries an evidence_id.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/v1/orders/{order_id}": {
+      "get": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "one order with its lines and status history",
+        "operationId": "getOrder",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^ORD-\\d{6}$",
+              "examples": [
+                "ORD-100123"
+              ],
+              "title": "Order Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/customers/{customer_id}/orders": {
+      "get": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "a customer's orders, newest first",
+        "operationId": "listCustomerOrders",
+        "parameters": [
+          {
+            "name": "customer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^CUST-\\d{5}$",
+              "examples": [
+                "CUST-00042"
+              ],
+              "title": "Customer Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderHistoryResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/orders/{order_id}/scans": {
+      "get": {
+        "tags": [
+          "store_inventory"
+        ],
+        "summary": "pick and pack scans for an order",
+        "operationId": "getOrderScans",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^ORD-\\d{6}$",
+              "examples": [
+                "ORD-100123"
+              ],
+              "title": "Order Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScansResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/stores/{store_id}/incidents": {
+      "get": {
+        "tags": [
+          "store_inventory"
+        ],
+        "summary": "store incidents in a time window",
+        "operationId": "listStoreIncidents",
+        "parameters": [
+          {
+            "name": "store_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^DS-[A-Z]{3}-\\d{2}$",
+              "examples": [
+                "DS-BLR-01"
+              ],
+              "title": "Store Id"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "rfc 3339, inclusive",
+              "title": "Since"
+            },
+            "description": "rfc 3339, inclusive"
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "rfc 3339, exclusive; at most 7 days after since",
+              "title": "Until"
+            },
+            "description": "rfc 3339, exclusive; at most 7 days after since"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentsResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/stores/{store_id}/stock-events": {
+      "get": {
+        "tags": [
+          "store_inventory"
+        ],
+        "summary": "stock events for one sku in a window",
+        "operationId": "listStockEvents",
+        "parameters": [
+          {
+            "name": "store_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^DS-[A-Z]{3}-\\d{2}$",
+              "examples": [
+                "DS-BLR-01"
+              ],
+              "title": "Store Id"
+            }
+          },
+          {
+            "name": "sku",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^SKU-[A-Z]{3}-\\d{3}$",
+              "examples": [
+                "SKU-DAI-001"
+              ],
+              "title": "Sku"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "rfc 3339, inclusive",
+              "title": "Since"
+            },
+            "description": "rfc 3339, inclusive"
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "rfc 3339, exclusive; at most 7 days after since",
+              "title": "Until"
+            },
+            "description": "rfc 3339, exclusive; at most 7 days after since"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockEventsResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/orders/{order_id}/trip": {
+      "get": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "the delivery trip and its gps points",
+        "operationId": "getOrderTrip",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^ORD-\\d{6}$",
+              "examples": [
+                "ORD-100123"
+              ],
+              "title": "Order Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/orders/{order_id}/pod": {
+      "get": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "proof of delivery: otp, bags handed over",
+        "operationId": "getProofOfDelivery",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^ORD-\\d{6}$",
+              "examples": [
+                "ORD-100123"
+              ],
+              "title": "Order Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProofOfDeliveryResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/orders/{order_id}/partner-notes": {
+      "get": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "free-text notes from the delivery partner",
+        "operationId": "listPartnerNotes",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^ORD-\\d{6}$",
+              "examples": [
+                "ORD-100123"
+              ],
+              "title": "Order Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartnerNotesResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/orders/{order_id}/payments": {
+      "get": {
+        "tags": [
+          "payments"
+        ],
+        "summary": "payment attempts, captures, gateway events",
+        "operationId": "listOrderPayments",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^ORD-\\d{6}$",
+              "examples": [
+                "ORD-100123"
+              ],
+              "title": "Order Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentsResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/orders/{order_id}/refunds": {
+      "get": {
+        "tags": [
+          "refunds_wallet"
+        ],
+        "summary": "refunds made for an order",
+        "operationId": "listOrderRefunds",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^ORD-\\d{6}$",
+              "examples": [
+                "ORD-100123"
+              ],
+              "title": "Order Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefundsResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Capture": {
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "title": "Capture Id"
+          },
+          "amount_paise": {
+            "type": "integer",
+            "title": "Amount Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "gateway_ref": {
+            "type": "string",
+            "title": "Gateway Ref"
+          },
+          "captured_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Captured At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "capture_id",
+          "amount_paise",
+          "gateway_ref",
+          "captured_at"
+        ],
+        "title": "Capture"
+      },
+      "GatewayEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "title": "Event Id"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "debit_success",
+              "debit_failed",
+              "capture",
+              "reversal"
+            ],
+            "title": "Type"
+          },
+          "amount_paise": {
+            "type": "integer",
+            "title": "Amount Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "gateway_ref": {
+            "type": "string",
+            "title": "Gateway Ref"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event_id",
+          "type",
+          "amount_paise",
+          "gateway_ref",
+          "at"
+        ],
+        "title": "GatewayEvent"
+      },
+      "GpsPoint": {
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "title": "Seq"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          },
+          "lat": {
+            "type": "number",
+            "title": "Lat"
+          },
+          "lng": {
+            "type": "number",
+            "title": "Lng"
+          }
+        },
+        "type": "object",
+        "required": [
+          "seq",
+          "at",
+          "lat",
+          "lng"
+        ],
+        "title": "GpsPoint"
+      },
+      "Incident": {
+        "properties": {
+          "incident_id": {
+            "type": "string",
+            "title": "Incident Id"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "out_of_stock",
+              "damaged_stock",
+              "power_cut",
+              "staff_shortage"
+            ],
+            "title": "Type"
+          },
+          "sku": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sku"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "incident_id",
+          "type",
+          "sku",
+          "description",
+          "at"
+        ],
+        "title": "Incident"
+      },
+      "IncidentsResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "store_id": {
+            "type": "string",
+            "title": "Store Id"
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Since"
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Until"
+          },
+          "incidents": {
+            "items": {
+              "$ref": "#/components/schemas/Incident"
+            },
+            "type": "array",
+            "title": "Incidents"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "store_id",
+          "since",
+          "until",
+          "incidents"
+        ],
+        "title": "IncidentsResponse"
+      },
+      "MissingScan": {
+        "properties": {
+          "sku": {
+            "type": "string",
+            "title": "Sku"
+          },
+          "line_no": {
+            "type": "integer",
+            "title": "Line No"
+          },
+          "expected": {
+            "type": "string",
+            "enum": [
+              "picked",
+              "packed"
+            ],
+            "title": "Expected"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sku",
+          "line_no",
+          "expected"
+        ],
+        "title": "MissingScan"
+      },
+      "OrderHistoryResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "orders": {
+            "items": {
+              "$ref": "#/components/schemas/OrderSummary"
+            },
+            "type": "array",
+            "title": "Orders"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "customer_id",
+          "orders"
+        ],
+        "title": "OrderHistoryResponse"
+      },
+      "OrderLine": {
+        "properties": {
+          "line_no": {
+            "type": "integer",
+            "title": "Line No"
+          },
+          "sku": {
+            "type": "string",
+            "title": "Sku"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "qty": {
+            "type": "integer",
+            "title": "Qty"
+          },
+          "unit_paise": {
+            "type": "integer",
+            "title": "Unit Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ORDERED",
+              "UNAVAILABLE",
+              "SUBSTITUTED"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "line_no",
+          "sku",
+          "name",
+          "qty",
+          "unit_paise",
+          "status"
+        ],
+        "title": "OrderLine"
+      },
+      "OrderResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "store_id": {
+            "type": "string",
+            "title": "Store Id"
+          },
+          "address_id": {
+            "type": "string",
+            "title": "Address Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PLACED",
+              "CONFIRMED",
+              "PACKING",
+              "PACKED",
+              "OUT_FOR_DELIVERY",
+              "DELIVERED",
+              "CANCELLED",
+              "PARTIALLY_FULFILLED"
+            ],
+            "title": "Status"
+          },
+          "item_total_paise": {
+            "type": "integer",
+            "title": "Item Total Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "discount_paise": {
+            "type": "integer",
+            "title": "Discount Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "delivery_fee_paise": {
+            "type": "integer",
+            "title": "Delivery Fee Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "total_paise": {
+            "type": "integer",
+            "title": "Total Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "coupon_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coupon Code"
+          },
+          "placed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Placed At"
+          },
+          "promised_by": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Promised By"
+          },
+          "delivered_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered At"
+          },
+          "cancelled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancelled At"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/OrderLine"
+            },
+            "type": "array",
+            "title": "Lines"
+          },
+          "status_history": {
+            "items": {
+              "$ref": "#/components/schemas/StatusChange"
+            },
+            "type": "array",
+            "title": "Status History"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "order_id",
+          "customer_id",
+          "store_id",
+          "address_id",
+          "status",
+          "item_total_paise",
+          "discount_paise",
+          "delivery_fee_paise",
+          "total_paise",
+          "coupon_code",
+          "placed_at",
+          "promised_by",
+          "delivered_at",
+          "cancelled_at",
+          "lines",
+          "status_history"
+        ],
+        "title": "OrderResponse"
+      },
+      "OrderSummary": {
+        "properties": {
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "store_id": {
+            "type": "string",
+            "title": "Store Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PLACED",
+              "CONFIRMED",
+              "PACKING",
+              "PACKED",
+              "OUT_FOR_DELIVERY",
+              "DELIVERED",
+              "CANCELLED",
+              "PARTIALLY_FULFILLED"
+            ],
+            "title": "Status"
+          },
+          "total_paise": {
+            "type": "integer",
+            "title": "Total Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "placed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Placed At"
+          },
+          "delivered_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "order_id",
+          "store_id",
+          "status",
+          "total_paise",
+          "placed_at",
+          "delivered_at"
+        ],
+        "title": "OrderSummary"
+      },
+      "PartnerNote": {
+        "properties": {
+          "note_id": {
+            "type": "string",
+            "title": "Note Id"
+          },
+          "trip_id": {
+            "type": "string",
+            "title": "Trip Id"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "free text from the delivery partner; untrusted input"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "note_id",
+          "trip_id",
+          "text",
+          "at"
+        ],
+        "title": "PartnerNote"
+      },
+      "PartnerNotesResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "notes": {
+            "items": {
+              "$ref": "#/components/schemas/PartnerNote"
+            },
+            "type": "array",
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "order_id",
+          "notes"
+        ],
+        "title": "PartnerNotesResponse"
+      },
+      "PaymentIntent": {
+        "properties": {
+          "intent_id": {
+            "type": "string",
+            "title": "Intent Id"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "upi",
+              "card",
+              "wallet"
+            ],
+            "title": "Method"
+          },
+          "instrument_ref": {
+            "type": "string",
+            "title": "Instrument Ref"
+          },
+          "amount_paise": {
+            "type": "integer",
+            "title": "Amount Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "created",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "captures": {
+            "items": {
+              "$ref": "#/components/schemas/Capture"
+            },
+            "type": "array",
+            "title": "Captures"
+          },
+          "gateway_events": {
+            "items": {
+              "$ref": "#/components/schemas/GatewayEvent"
+            },
+            "type": "array",
+            "title": "Gateway Events"
+          }
+        },
+        "type": "object",
+        "required": [
+          "intent_id",
+          "method",
+          "instrument_ref",
+          "amount_paise",
+          "status",
+          "created_at",
+          "captures",
+          "gateway_events"
+        ],
+        "title": "PaymentIntent"
+      },
+      "PaymentsResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "intents": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentIntent"
+            },
+            "type": "array",
+            "title": "Intents"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "order_id",
+          "intents"
+        ],
+        "title": "PaymentsResponse"
+      },
+      "Problem": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "type": "integer",
+            "title": "Status"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instance"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status"
+        ],
+        "title": "Problem",
+        "description": "rfc 9457 problem details."
+      },
+      "ProofOfDeliveryResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "trip_id": {
+            "type": "string",
+            "title": "Trip Id"
+          },
+          "otp_verified": {
+            "type": "boolean",
+            "title": "Otp Verified"
+          },
+          "bags_handed": {
+            "type": "integer",
+            "title": "Bags Handed"
+          },
+          "handed_to": {
+            "type": "string",
+            "enum": [
+              "customer",
+              "family_member",
+              "security"
+            ],
+            "title": "Handed To"
+          },
+          "delivered_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Delivered At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "order_id",
+          "trip_id",
+          "otp_verified",
+          "bags_handed",
+          "handed_to",
+          "delivered_at"
+        ],
+        "title": "ProofOfDeliveryResponse"
+      },
+      "Refund": {
+        "properties": {
+          "refund_id": {
+            "type": "string",
+            "title": "Refund Id"
+          },
+          "amount_paise": {
+            "type": "integer",
+            "title": "Amount Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "destination": {
+            "type": "string",
+            "enum": [
+              "source",
+              "wallet"
+            ],
+            "title": "Destination"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "INITIATED",
+              "SUBMITTED_TO_GATEWAY",
+              "COMPLETED",
+              "FAILED",
+              "RETRYING",
+              "COMPENSATED"
+            ],
+            "title": "Status"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "refund_id",
+          "amount_paise",
+          "destination",
+          "status",
+          "reason",
+          "case_id",
+          "created_at"
+        ],
+        "title": "Refund"
+      },
+      "RefundsResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "refunds": {
+            "items": {
+              "$ref": "#/components/schemas/Refund"
+            },
+            "type": "array",
+            "title": "Refunds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "order_id",
+          "refunds"
+        ],
+        "title": "RefundsResponse"
+      },
+      "Scan": {
+        "properties": {
+          "scan_id": {
+            "type": "string",
+            "title": "Scan Id"
+          },
+          "sku": {
+            "type": "string",
+            "title": "Sku"
+          },
+          "event": {
+            "type": "string",
+            "enum": [
+              "picked",
+              "packed"
+            ],
+            "title": "Event"
+          },
+          "qty": {
+            "type": "integer",
+            "title": "Qty"
+          },
+          "bag": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bag"
+          },
+          "picker": {
+            "type": "string",
+            "title": "Picker"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scan_id",
+          "sku",
+          "event",
+          "qty",
+          "bag",
+          "picker",
+          "at"
+        ],
+        "title": "Scan"
+      },
+      "ScansResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "store_id": {
+            "type": "string",
+            "title": "Store Id"
+          },
+          "scans": {
+            "items": {
+              "$ref": "#/components/schemas/Scan"
+            },
+            "type": "array",
+            "title": "Scans"
+          },
+          "missing_scans": {
+            "items": {
+              "$ref": "#/components/schemas/MissingScan"
+            },
+            "type": "array",
+            "title": "Missing Scans",
+            "description": "ordered lines without the scan their stage needs; empty until the order is packed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "order_id",
+          "store_id",
+          "scans",
+          "missing_scans"
+        ],
+        "title": "ScansResponse"
+      },
+      "StatusChange": {
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "title": "Seq"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "seq",
+          "status",
+          "at"
+        ],
+        "title": "StatusChange"
+      },
+      "StockEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "title": "Event Id"
+          },
+          "sku": {
+            "type": "string",
+            "title": "Sku"
+          },
+          "event_type": {
+            "type": "string",
+            "enum": [
+              "restock",
+              "stock_out",
+              "adjust"
+            ],
+            "title": "Event Type"
+          },
+          "qty_delta": {
+            "type": "integer",
+            "title": "Qty Delta"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event_id",
+          "sku",
+          "event_type",
+          "qty_delta",
+          "at"
+        ],
+        "title": "StockEvent"
+      },
+      "StockEventsResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "store_id": {
+            "type": "string",
+            "title": "Store Id"
+          },
+          "sku": {
+            "type": "string",
+            "title": "Sku"
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Since"
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Until"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/StockEvent"
+            },
+            "type": "array",
+            "title": "Events"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "store_id",
+          "sku",
+          "since",
+          "until",
+          "events"
+        ],
+        "title": "StockEventsResponse"
+      },
+      "TripResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "trip_id": {
+            "type": "string",
+            "title": "Trip Id"
+          },
+          "rider_id": {
+            "type": "string",
+            "title": "Rider Id"
+          },
+          "store_id": {
+            "type": "string",
+            "title": "Store Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ASSIGNED",
+              "PICKED_UP",
+              "DELIVERED",
+              "CANCELLED"
+            ],
+            "title": "Status"
+          },
+          "assigned_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Assigned At"
+          },
+          "picked_up_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Picked Up At"
+          },
+          "delivered_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered At"
+          },
+          "eta_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Eta At"
+          },
+          "distance_m": {
+            "type": "integer",
+            "title": "Distance M"
+          },
+          "gps_points": {
+            "items": {
+              "$ref": "#/components/schemas/GpsPoint"
+            },
+            "type": "array",
+            "title": "Gps Points"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "order_id",
+          "trip_id",
+          "rider_id",
+          "store_id",
+          "status",
+          "assigned_at",
+          "picked_up_at",
+          "delivered_at",
+          "eta_at",
+          "distance_m",
+          "gps_points"
+        ],
+        "title": "TripResponse"
+      }
+    }
+  }
+}

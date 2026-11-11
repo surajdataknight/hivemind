@@ -1,0 +1,28 @@
+[project]
+name = "hivemind"
+version = "0.0.0"
+description = "multi-agent customer support for a simulated quick-commerce grocery business"
+requires-python = "==3.12.*"
+dependencies = ["hivemind-backend", "hivemind-datagen"]
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+    "httpx2==2.16.0",
+    "jsonschema==4.26.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["backend", "datagen"]
+
+[tool.uv.sources]
+hivemind-backend = { workspace = true }
+hivemind-datagen = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["datagen/tests", "backend/tests"]
+markers = ["db: needs the local postgres started by docker compose"]
+addopts = "--import-mode=importlib"
