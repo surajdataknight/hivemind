@@ -11,7 +11,18 @@ from hivemind_agents.backend_client import BackendClient, NotFound
 from hivemind_agents.contracts import Issue, OrderRef
 
 LIVE = ("PLACED", "CONFIRMED", "PACKING", "PACKED", "OUT_FOR_DELIVERY")
+DELIVERED = ("DELIVERED", "PARTIALLY_FULFILLED")
 RECENT_ORDERS = 5
+
+# the orders a problem of each type can be about; None: any order. these case types need an order before they are
+# worked, so when the rules cannot tell which one, the customer is asked
+FITS: dict[str, tuple[str, ...] | None] = {
+    "item_missing_or_wrong": DELIVERED,
+    "quality": DELIVERED,
+    "delivery_partner_behaviour": ("OUT_FOR_DELIVERY",) + DELIVERED,
+    "cancellation": LIVE,
+    "refund": None,
+}
 
 
 @dataclass
@@ -49,9 +60,24 @@ def triage(issue: Issue, recent: list[OrderRef], backend: BackendClient) -> Tria
         return _where_is_my_order(issue, recent)
     if issue.case_type == "offers_coupons":
         return _coupon(issue, recent, backend)
-    if issue.order_id is None and len(recent) == 1:
-        issue = issue.model_copy(update={"order_id": recent[0].order_id})
-    return Triage(issue)  # other case types are recorded as they are, with or without an order
+    if issue.order_id:
+        return Triage(issue)
+    fitting = [o for o in recent if _fits(issue.case_type, o)]
+    if issue.latest_order and fitting:  # "my last order": the newest one this problem can be about
+        return Triage(issue.model_copy(update={"order_id": fitting[0].order_id}))
+    if issue.case_type not in FITS:  # a failed payment may have no order at all: recorded as it is
+        if len(recent) == 1:
+            issue = issue.model_copy(update={"order_id": recent[0].order_id})
+        return Triage(issue)
+    choices = fitting or recent
+    if len(choices) == 1:
+        return Triage(issue.model_copy(update={"order_id": choices[0].order_id}))
+    return Triage(issue, ask="order", choices=choices)
+
+
+def _fits(case_type: str, order: OrderRef) -> bool:
+    statuses = FITS.get(case_type)  # a type not in FITS (a failed payment) can be about any order
+    return statuses is None or order.status in statuses
 
 
 def _where_is_my_order(issue: Issue, recent: list[OrderRef]) -> Triage:

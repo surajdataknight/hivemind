@@ -45,6 +45,7 @@ class IssueDraft(BaseModel):
     items_mentioned: list[str]
     claimed_amount_rupees: float | None
     coupon_code: str | None
+    about_latest_order: bool
 
 
 class IntakeDraft(BaseModel):
@@ -87,6 +88,9 @@ fields:
 - issues: one entry for each separate problem in the message. Empty unless scope is in_scope.
 - order_id: an order id the customer wrote in the message or the earlier turns, even if it is not in the list of \
 recent orders. Otherwise null. Never guess one, and never pick one from the list the customer did not write.
+- about_latest_order: true when the customer says this problem is about their last, latest or most recent order \
+(for example "my last order", "my last delivered order") and wrote no order id for it. Otherwise false. A day \
+("yesterday's order") is not enough.
 - coupon_code: the code as the customer wrote it, in capitals, or null.
 - items_mentioned: the product words the customer used, or an empty list.
 - claimed_amount_rupees: an amount of money the customer says they are owed or were charged, or null.
@@ -111,13 +115,20 @@ def find_order_ids(text: str) -> list[str]:
     return seen
 
 
-def from_button(hint: IntentHint) -> IntakeV1:
+def waiting(pending: dict[str, Any] | None) -> list[Issue]:
+    """the other issues of an earlier message that wait behind our question."""
+    return [Issue(**queued) for queued in (pending or {}).get("queue", [])]
+
+
+def from_button(hint: IntentHint, pending: dict[str, Any] | None = None) -> IntakeV1:
     issue = Issue(case_type=hint.case_type, order_id=hint.order_id, coupon_code=hint.coupon_code)
-    return IntakeV1(scope="in_scope", issues=[issue], source="button")
+    answers = bool(pending) and pending.get("case_type") == hint.case_type  # a button under our question
+    return IntakeV1(scope="in_scope", issues=[issue] + (waiting(pending) if answers else []), source="button")
 
 
 def from_pending(pending: dict[str, Any] | None, text: str) -> IntakeV1 | None:
-    """the customer answering our own question ("which order?", "which coupon?")."""
+    """the customer answering our own question ("which order?", "which coupon?"). the issues waiting behind the
+    question come along."""
     if not pending:
         return None
     issue = Issue(case_type=pending["case_type"], order_id=pending.get("order_id"),
@@ -130,7 +141,7 @@ def from_pending(pending: dict[str, Any] | None, text: str) -> IntakeV1 | None:
         issue.coupon_code = word
     else:
         return None
-    return IntakeV1(scope="in_scope", issues=[issue], source="rule")
+    return IntakeV1(scope="in_scope", issues=[issue] + waiting(pending), source="rule")
 
 
 def from_rules(text: str) -> IntakeV1 | None:
@@ -172,7 +183,8 @@ def check_draft(draft: IntakeDraft, text: str, history: list[Turn]) -> IntakeV1:
         issues.append(Issue(
             case_type=item.case_type, order_id=order_id, items_mentioned=item.items_mentioned[:10],
             claimed_amount_paise=round(amount * 100) if amount is not None and 0 < amount < 1_000_000 else None,
-            coupon_code=code if COUPON_CODE.match(code) else None))
+            coupon_code=code if COUPON_CODE.match(code) else None,
+            latest_order=item.about_latest_order and order_id is None))
     return IntakeV1(
         scope=draft.scope, issues=issues, sentiment=draft.sentiment, urgency=draft.urgency,
         language=draft.language.strip().lower()[:8] or "en",
@@ -182,7 +194,7 @@ def check_draft(draft: IntakeDraft, text: str, history: list[Turn]) -> IntakeV1:
 def intake(text: str, hint: IntentHint | None, pending: dict[str, Any] | None, history: list[Turn],
            recent_orders: list[OrderRef], llm: ModelRouter) -> IntakeV1:
     if hint is not None:
-        return from_button(hint)
+        return from_button(hint, pending)
     by_rule = from_pending(pending, text) or from_rules(text)
     if by_rule is not None:
         return by_rule

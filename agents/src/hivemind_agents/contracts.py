@@ -1,16 +1,14 @@
 """the typed contracts between capabilities. nothing passes from one capability to the next except these."""
 
 from datetime import datetime
-from typing import Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 CaseType = Literal["where_is_my_order", "item_missing_or_wrong", "quality", "cancellation", "refund",
                    "payment_failed", "delivery_partner_behaviour", "offers_coupons"]
 Scope = Literal["in_scope", "out_of_scope", "safety", "legal", "small_talk"]
-
-# case types with a path built so far; the rest stop as "waiting for a person"
-SHORT_PATHS: tuple[str, ...] = ("where_is_my_order", "offers_coupons")
 
 
 # c1
@@ -42,6 +40,7 @@ class Issue(BaseModel):
     items_mentioned: list[str] = []
     claimed_amount_paise: int | None = None
     coupon_code: str | None = None
+    latest_order: bool = Field(default=False, description="the customer said their last order, with no order id")
 
 
 class IntakeV1(BaseModel):
@@ -82,6 +81,32 @@ class CaseRef(BaseModel):
     order_id: str | None
     state: str
     opened: bool
+
+
+class Lease(BaseModel):
+    """this run's hold on a case: one run per case. a write carries the fencing number; once another run has taken
+    the case over, the number is old and the write is refused."""
+
+    case_id: str
+    holder: str
+    fence: int
+
+
+# the case board
+
+
+class Finding(BaseModel):
+    """one fact an investigator found, tied to the reads that prove it (blueprint 2.3, the result envelope)."""
+
+    finding_id: str = Field(default_factory=lambda: "f_" + uuid4().hex[:16])
+    case_id: str
+    task_id: str
+    capability: str
+    type: str = Field(pattern=r"^[a-z_]+\.[a-z_]+$", examples=["delivery.pod_mismatch"])
+    claim: str = Field(min_length=1)
+    evidence_refs: list[str] = Field(min_length=1, description="evidence ids of reads made in this case")
+    confidence: Literal["low", "medium", "high"]
+    confidence_basis: str | None = None
 
 
 # c12
@@ -151,8 +176,25 @@ class Reply(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
+def add_to_boards(left: dict[str, list[Finding]] | None,
+                  right: dict[str, list[Finding]] | None) -> dict[str, list[Finding]]:
+    """the case board's reducer: findings are only ever added, one list per case, each finding once
+    (blueprint b.5: a typed state channel with an append-only reducer)."""
+    boards = {case_id: list(findings) for case_id, findings in (left or {}).items()}
+    for case_id, findings in (right or {}).items():
+        board = boards.setdefault(case_id, [])
+        known = {f.finding_id for f in board}
+        board.extend(f for f in findings if f.finding_id not in known)
+    return boards
+
+
+def add_pieces(left: list[Reply] | None, right: list[Reply] | None) -> list[Reply]:
+    return (left or []) + (right or [])
+
+
 class RunState(TypedDict, total=False):
-    """the state of one run of the case graph: one customer message in, one reply out."""
+    """the state of one run of the case graph: one customer message in, one reply out. a message can hold several
+    issues; each gets its own case and adds its piece to the reply."""
 
     conversation_id: str
     identity: Identity
@@ -163,9 +205,16 @@ class RunState(TypedDict, total=False):
     guard: GuardResult
     recent_orders: list[OrderRef]
     intake: IntakeV1
-    route: str
-    issue: Issue
-    case: CaseRef
-    finding: PromotionFinding
-    policy: list[PolicySection]
+    todo: list[Issue]                 # issues not worked yet, in the order the customer wrote them
+    seen: list[str]                   # case type and order of each issue worked in this run
+    ask: Reply | None                 # the one question this reply ends with; later issues that need one wait in it
+    # the issue being worked, cleared before the next one
+    issue: Issue | None
+    case: CaseRef | None
+    finding: PromotionFinding | None
+    policy: list[PolicySection] | None
+    piece: Reply | None
+    # what the run adds up
+    pieces: Annotated[list[Reply], add_pieces]
+    boards: Annotated[dict[str, list[Finding]], add_to_boards]
     reply: Reply

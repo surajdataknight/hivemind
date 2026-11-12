@@ -4,9 +4,13 @@ one client per run, bound to that run's case token. the customer is whoever the 
 customer id.
 """
 
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
+from hivemind_agents import evidence
 from hivemind_agents.tracing import Tracer, trace_headers
+
+# (case id, operation, body): keeps a read as proof for the case it was made for
+Ledger = Callable[[str, str, dict], None]
 
 
 class Http(Protocol):
@@ -22,11 +26,12 @@ class NotFound(Exception):
 
 
 class BackendClient:
-    def __init__(self, http: Http, case_token: str, tracer: Tracer):
+    def __init__(self, http: Http, case_token: str, tracer: Tracer, ledger: Ledger | None = None):
         self._http = http
         self._auth = {"Authorization": f"Bearer {case_token}"}
         self._tracer = tracer
-        self.case_id: str | None = None
+        self._ledger = ledger
+        self.case_id: str | None = None  # the case being worked: every read is kept as proof for it
 
     def _call(self, operation: str, method: str, path: str, *, params: dict | None = None,
               body: dict | None = None) -> dict:
@@ -46,6 +51,10 @@ class BackendClient:
             data = response.json()
             if "evidence_id" in data:
                 span.set_attribute("hivemind.evidence_id", data["evidence_id"])
+                if not evidence.matches(data):
+                    raise BackendError(f"{operation}: the evidence id does not match the body")
+                if self.case_id and self._ledger:
+                    self._ledger(self.case_id, operation, data)
         if response.status_code == 404:  # an answer, not a failure: raised outside the span
             raise NotFound(operation)
         return data
@@ -85,5 +94,5 @@ class BackendClient:
     def open_case(self, case_type: str, order_id: str | None) -> dict:
         return self._call("openCase", "POST", "/v1/cases", body={"issue_type": case_type, "order_id": order_id})
 
-    def move_case(self, case_id: str, state: str) -> dict:
-        return self._call("moveCase", "POST", f"/v1/cases/{case_id}/state", body={"state": state})
+    def move_case(self, case_id: str, state: str, reason: str | None = None) -> dict:
+        return self._call("moveCase", "POST", f"/v1/cases/{case_id}/state", body={"state": state, "reason": reason})

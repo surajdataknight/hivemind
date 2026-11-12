@@ -19,10 +19,10 @@ from hivemind_agents.contracts import Turn
 
 class ChatStore:
     def __init__(self, conninfo: str):
-        self._conninfo = conninfo
+        self.conninfo = conninfo
 
     def _connect(self) -> psycopg.Connection:
-        return psycopg.connect(self._conninfo, row_factory=dict_row)
+        return psycopg.connect(self.conninfo, row_factory=dict_row)
 
     def create_conversation(self, customer_id: str, session_id: str) -> str:
         """a new chat, opened with the welcome that says hivemind is an ai."""

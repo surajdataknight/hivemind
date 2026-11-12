@@ -51,6 +51,6 @@ def draft(scope="in_scope", issues=(), language="en", sentiment="neutral", urgen
             "language": language, "needs_clarification": unclear}
 
 
-def issue(case_type, order_id=None, coupon_code=None, items=(), amount=None) -> dict:
+def issue(case_type, order_id=None, coupon_code=None, items=(), amount=None, latest=False) -> dict:
     return {"case_type": case_type, "order_id": order_id, "items_mentioned": list(items),
-            "claimed_amount_rupees": amount, "coupon_code": coupon_code}
+            "claimed_amount_rupees": amount, "coupon_code": coupon_code, "about_latest_order": latest}

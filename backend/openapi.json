@@ -3,7 +3,7 @@
   "info": {
     "title": "HiveMind simulated business",
     "description": "apis of the simulated quick-commerce grocery business. money is integer paise; times are rfc 3339 utc; errors are rfc 9457 problem details. every read carries an evidence_id. every api except the fake sign-in needs a case token (`Authorization: Bearer ...`); the customer comes from that token, never from the url.",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "paths": {
     "/v1/clock": {
@@ -1846,6 +1846,22 @@
               "REOPENED"
             ],
             "title": "State"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,59}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "why the case moves, as a short code; kept in the case's history",
+            "examples": [
+              "reply_sent"
+            ]
           }
         },
         "type": "object",

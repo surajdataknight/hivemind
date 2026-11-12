@@ -61,7 +61,8 @@ def clean_chat_state(test_db, test_db_name):
     """no cases or chats left over from another test."""
     with db.connect("admin", dbname=test_db_name) as conn:
         conn.execute("truncate support.cases cascade")
-        conn.execute("truncate agent.pii_vault, agent.messages, agent.conversations")
+        conn.execute("truncate agent.pii_vault, agent.messages, agent.conversations, agent.case_leases, "
+                     "agent.evidence_ledger, agent.findings")
 
 
 @pytest.fixture

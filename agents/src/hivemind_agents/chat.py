@@ -9,14 +9,16 @@ import copy
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable
+from uuid import uuid4
 
 from hivemind_agents import replies
 from hivemind_agents.backend_client import BackendClient, BackendError, Http, NotFound
 from hivemind_agents.capabilities.identity import IdentityVerifier, NotSignedIn
 from hivemind_agents.capabilities.input_guard import MAX_MESSAGE_CHARS, PiiVault, guard
 from hivemind_agents.capabilities.intake import HISTORY_TURNS
+from hivemind_agents.case_store import CaseStore
 from hivemind_agents.contracts import IntentHint, Reply
-from hivemind_agents.graph import RunContext, build_graph
+from hivemind_agents.graph import RECURSION_LIMIT, RunContext, build_graph
 from hivemind_agents.llm import LLMUnavailable, ModelRouter
 from hivemind_agents.store import ChatStore
 from hivemind_agents.tracing import Tracer, set_output
@@ -133,10 +135,11 @@ class ChatService:
             def show(event: dict) -> None:
                 emit({**event, "text": vault.restore(event["text"])})
 
+            cases = CaseStore(store.conninfo, holder=f"{conversation_id}:{uuid4().hex[:12]}")
             try:
                 with deps.tracer.capability("session_identity_verifier") as span:
                     identity, case_token = deps.verifier.mint_case_token(customer_id, session_id, conversation_id)
-                    backend = BackendClient(deps.http, case_token, deps.tracer)
+                    backend = BackendClient(deps.http, case_token, deps.tracer, ledger=cases.record_evidence)
                     try:
                         backend.me()  # the business must know this customer; otherwise nothing runs
                     except NotFound:
@@ -146,8 +149,9 @@ class ChatService:
                 state = {"conversation_id": conversation_id, "identity": identity, "raw_text": text, "hint": hint,
                          "history": store.recent_turns(conversation_id, HISTORY_TURNS),
                          "pending": store.last_assistant_meta(conversation_id).get("pending")}
-                context = RunContext(backend=backend, llm=llm, vault=vault, tracer=deps.tracer)
-                for mode, chunk in self.graph.stream(state, context=context, stream_mode=["custom", "values"]):
+                context = RunContext(backend=backend, llm=llm, vault=vault, tracer=deps.tracer, cases=cases)
+                for mode, chunk in self.graph.stream(state, {"recursion_limit": RECURSION_LIMIT}, context=context,
+                                                     stream_mode=["custom", "values"]):
                     if mode == "custom":
                         show(chunk)
                         continue
@@ -161,6 +165,8 @@ class ChatService:
                     sent_seq = keep_customer_message(guard(text, vault))
                 reply = Reply(kind="trouble", text=replies.TROUBLE)
                 emit({"type": "replace", "text": reply.text})
+            finally:
+                cases.close()  # lets go of every case this run still holds
 
             reply.llm_calls = llm.calls
             meta = {**reply.meta, "reply_to": sent_seq, "llm_calls": llm.calls,

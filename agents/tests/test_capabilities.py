@@ -204,6 +204,13 @@ def test_one_problem_and_one_written_order_id_go_together_when_the_model_leaves_
     assert both.issues[0].order_id is None
 
 
+def test_the_last_order_counts_only_when_no_order_id_goes_with_the_problem():
+    said = checked(draft(issues=[issue("item_missing_or_wrong", latest=True)]), "my last order had no bread")
+    assert said.issues[0].latest_order and said.issues[0].order_id is None
+    written = checked(draft(issues=[issue("item_missing_or_wrong", latest=True)]), "my last order ORD-100123")
+    assert written.issues[0].order_id == "ORD-100123" and not written.issues[0].latest_order
+
+
 def test_a_bad_code_or_amount_is_dropped_and_rupees_become_paise():
     result = checked(draft(issues=[issue("offers_coupons", coupon_code="my coupon!", amount=49.5)]), "x")
     assert result.issues[0].coupon_code is None and result.issues[0].claimed_amount_paise == 4950
@@ -318,10 +325,40 @@ def test_coupon_triage(orders, attempts, given, expect):
     assert (result.issue.order_id, result.issue.coupon_code, result.ask) == expect
 
 
-def test_other_case_types_are_recorded_as_they_are():
-    shop = Shop([row("ORD-000002"), row("ORD-000001")])
-    assert run_triage(Issue(case_type="refund"), shop).issue.order_id is None
-    assert run_triage(Issue(case_type="refund"), Shop([row("ORD-000001")])).issue.order_id == "ORD-000001"
+MIXED = [row("ORD-000005", "OUT_FOR_DELIVERY"), row("ORD-000004"), row("ORD-000003", "CANCELLED"),
+         row("ORD-000002", "PARTIALLY_FULFILLED"), row("ORD-000001", "PACKING")]
+
+
+@pytest.mark.parametrize("case_type,latest,orders,expect", [
+    # "my last order": the newest order this kind of problem can be about
+    ("item_missing_or_wrong", True, MIXED, ("ORD-000004", None, [])),
+    ("quality", True, MIXED[2:], ("ORD-000002", None, [])),
+    ("delivery_partner_behaviour", True, MIXED, ("ORD-000005", None, [])),
+    ("cancellation", True, MIXED[1:], ("ORD-000001", None, [])),
+    ("refund", True, MIXED, ("ORD-000005", None, [])),
+    ("payment_failed", True, MIXED, ("ORD-000005", None, [])),
+    # no order said: only one it can be about, that one; several, ask among them
+    ("item_missing_or_wrong", False, MIXED[2:], ("ORD-000002", None, [])),
+    ("item_missing_or_wrong", False, MIXED, (None, "order", ["ORD-000004", "ORD-000002"])),
+    ("cancellation", False, MIXED, (None, "order", ["ORD-000005", "ORD-000001"])),
+    ("refund", False, MIXED[:2], (None, "order", ["ORD-000005", "ORD-000004"])),
+    # none it can be about: ask among all of them (it may be an older one, typed in)
+    ("item_missing_or_wrong", False, [row("ORD-000002", "PACKING"), row("ORD-000001", "CANCELLED")],
+     (None, "order", ["ORD-000002", "ORD-000001"])),
+    ("item_missing_or_wrong", True, [row("ORD-000002", "PACKING"), row("ORD-000001", "CANCELLED")],
+     (None, "order", ["ORD-000002", "ORD-000001"])),
+    # a failed payment may be for an order that was never placed: recorded as it is, never asked
+    ("payment_failed", False, MIXED, (None, None, [])),
+    ("payment_failed", False, MIXED[:1], ("ORD-000005", None, [])),
+])
+def test_which_order_a_problem_is_about(case_type, latest, orders, expect):
+    result = run_triage(Issue(case_type=case_type, latest_order=latest), Shop(orders))
+    assert (result.issue.order_id, result.ask, [o.order_id for o in result.choices]) == expect
+
+
+def test_an_order_named_is_kept_whatever_its_state():
+    named = run_triage(Issue(case_type="item_missing_or_wrong", order_id="ORD-000005"), Shop(MIXED))
+    assert (named.issue.order_id, named.ask) == ("ORD-000005", None)
 
 
 # the where-is-my-order template

@@ -16,11 +16,11 @@ from psycopg.rows import dict_row
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException
 
-from hivemind_backend import auth, db, models, promotions
+from hivemind_backend import auth, cases, db, models, promotions
 from hivemind_backend.auth import Caller, scope
 from hivemind_backend.evidence import evidence_id
 
-API_VERSION = "0.2.0"
+API_VERSION = "0.3.0"
 MAX_WINDOW = timedelta(days=7)
 PACKED_OR_LATER = {"PACKED", "OUT_FOR_DELIVERY", "DELIVERED", "PARTIALLY_FULFILLED"}
 
@@ -466,13 +466,21 @@ def evaluate_promotion(
     return evidenced(models.PromotionEvaluation, models.PromotionEvaluationResponse, data)
 
 
-# support module: cases; the full state machine comes with the full case manager, these are the moves the
-# short paths make
+# support module: cases. the legal moves are in cases.py; every open, attach and move is kept in case_events
 
 CaseId = Annotated[str, Path(pattern=r"^CASE-[0-9A-F]{12}$", examples=["CASE-0123456789AB"])]
 CASE_COLUMNS = "case_id, customer_id, order_id, issue_type, state, created_at, updated_at"
-TRANSITIONS = {"OPEN": {"INVESTIGATING"}, "INVESTIGATING": {"RESOLVED", "AWAITING_HUMAN"}}
 CASE_ERRORS = {**ERRORS, 409: PROBLEM}
+
+
+def add_case_event(conn: psycopg.Connection, case_id: str, type_: str, from_state: str | None, to_state: str,
+                   reason: str | None, at: datetime) -> None:
+    """call inside the transaction that makes the change, after the case row is locked or new."""
+    conn.execute(
+        "insert into support.case_events (case_id, seq, type, from_state, to_state, reason, at) "
+        "select %s, coalesce(max(seq), 0) + 1, %s, %s, %s, %s, %s from support.case_events where case_id = %s",
+        (case_id, type_, from_state, to_state, reason, at, case_id),
+    )
 
 
 @app.post("/v1/cases", response_model=models.OpenedCase, responses=ERRORS, tags=["support"],
@@ -486,16 +494,18 @@ def open_case(body: models.CaseOpenRequest, conn: DbConn, who: Caller = scope("c
         conn.execute("select pg_advisory_xact_lock(hashtext(%s))", (who.customer_id,))
         row = conn.execute(
             f"select {CASE_COLUMNS} from support.cases where customer_id = %s and order_id is not distinct from %s "
-            "and issue_type = %s and state not in ('RESOLVED', 'CLOSED')",
-            (who.customer_id, body.order_id, body.issue_type),
+            "and issue_type = %s and state = any(%s) for update",
+            (who.customer_id, body.order_id, body.issue_type, list(cases.OPEN_STATES)),
         ).fetchone()
-        if row is not None:
+        if row is not None:  # a new message about the same problem attaches to its open case
+            add_case_event(conn, row["case_id"], "attached", row["state"], row["state"], None, now)
             return {**row, "opened": False}
         row = conn.execute(
             "insert into support.cases (case_id, customer_id, order_id, issue_type, state, created_at, updated_at) "
             f"values (%s, %s, %s, %s, 'OPEN', %s, %s) returning {CASE_COLUMNS}",
             ("CASE-" + uuid4().hex[:12].upper(), who.customer_id, body.order_id, body.issue_type, now, now),
         ).fetchone()
+        add_case_event(conn, row["case_id"], "opened", None, "OPEN", None, now)
         return {**row, "opened": True}
 
 
@@ -505,16 +515,27 @@ def move_case(case_id: CaseId, body: models.CaseStateRequest, conn: DbConn,
               who: Caller = scope("cases:write:self")):
     now = sim_now(conn)
     with conn.transaction():
+        # the same lock as opening takes, first, so a reopen and an open cannot both leave a case open
+        conn.execute("select pg_advisory_xact_lock(hashtext(%s))", (who.customer_id,))
         row = conn.execute(
             f"select {CASE_COLUMNS} from support.cases where case_id = %s and customer_id = %s for update",
             (case_id, who.customer_id),
         ).fetchone()
         if row is None:
             raise not_found(f"case {case_id} does not exist")
-        if row["state"] == body.state:
+        if row["state"] == body.state:  # a repeat of a move already made changes nothing
             return row
-        if body.state not in TRANSITIONS.get(row["state"], set()):
+        if not cases.can_move(row["state"], body.state):
             raise HTTPException(status_code=409, detail=f"a case cannot move from {row['state']} to {body.state}")
+        if row["state"] not in cases.OPEN_STATES and body.state in cases.OPEN_STATES:
+            other = conn.execute(
+                "select case_id from support.cases where customer_id = %s and order_id is not distinct from %s "
+                "and issue_type = %s and state = any(%s)",
+                (who.customer_id, row["order_id"], row["issue_type"], list(cases.OPEN_STATES)),
+            ).fetchone()
+            if other is not None:
+                raise HTTPException(status_code=409, detail=f"case {other['case_id']} about this is already open")
+        add_case_event(conn, case_id, "moved", row["state"], body.state, body.reason, now)
         return conn.execute(
             f"update support.cases set state = %s, updated_at = %s where case_id = %s returning {CASE_COLUMNS}",
             (body.state, now, case_id),

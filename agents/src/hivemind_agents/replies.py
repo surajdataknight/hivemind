@@ -40,8 +40,10 @@ ALREADY_WITH_PERSON = ("This is already recorded for a person in customer care t
 CLARIFY = (f"I want to get this right. Is it about an order: {CAN_HELP_WITH}? Tell me a little more about what "
            "happened.")
 
-MORE_ISSUES = (" You also mentioned something else. Please send it as a separate message so I can look at it on "
-               "its own.")
+CASE_BUSY = "I'm already looking into this. Please ask me again in a couple of minutes."
+
+# between the parts of one reply that answers several problems
+PART_BREAK = "\n\n"
 
 CASE_LABELS = {
     "where_is_my_order": "where your order is",
@@ -70,8 +72,11 @@ def order_not_found(order_id: str) -> str:
     return f"I couldn't find order {order_id} on your account. Which order is this about?"
 
 
-def which_order() -> str:
-    return "Which order is this about?"
+def which_order(case_type: str | None = None) -> str:
+    """the question alone, or, after the parts about other problems in the same reply, naming its problem."""
+    if case_type is None:
+        return "Which order is this about?"
+    return f"About {CASE_LABELS[case_type]}: which order is it?"
 
 
 def which_coupon(order_id: str) -> str:

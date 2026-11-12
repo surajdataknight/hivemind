@@ -293,10 +293,133 @@ def test_24_not_in_english(chat_as, data, model, cases, live):
     assert text == replies.ENGLISH_ONLY and cases() == []
 
 
-def test_25_two_problems_in_one_message(chat_as, data, model, cases, live):
+def test_25_two_problems_in_one_message_two_cases_one_reply(chat_as, data, model, cases, live):
+    """blueprint s21: the issues are split, each gets its own case, and one reply answers both, in order."""
+    order = next(o for o in data.orders if o["status"] == "OUT_FOR_DELIVERY"
+                 and data.by_customer[o["customer_id"]][0] is o
+                 and any(p["status"] == "DELIVERED" for p in data.by_customer[o["customer_id"]][:5]))
+    last_delivered = next(p for p in data.by_customer[order["customer_id"]] if p["status"] == "DELIVERED")
+    model.intakes.append(draft(issues=[issue("item_missing_or_wrong", items=["bread"], latest=True),
+                                       issue("where_is_my_order")]))
+    chat = chat_as(order["customer_id"])
+    done = chat.say("My last delivered order had no bread in it, and also where is my order today? It hasn't come yet.")
+    text = check(done, "several", calls=1, live=live, has=("a missing or wrong item", order["order_id"], "on its way"))
+    first, second = text.split(replies.PART_BREAK)
+    assert first == replies.waiting_for_person("item_missing_or_wrong") and order["order_id"] in second
+    assert " ".join(chat.streamed_text().split()) == " ".join(text.split())  # shown in the same order, as it came
+    rows = {c["issue_type"]: c for c in cases()}
+    assert set(rows) == {"item_missing_or_wrong", "where_is_my_order"}
+    assert rows["item_missing_or_wrong"]["state"] == "AWAITING_HUMAN" and rows["where_is_my_order"]["state"] == "RESOLVED"
+    assert rows["item_missing_or_wrong"]["order_id"] == last_delivered["order_id"]  # "my last delivered order"
+    assert rows["where_is_my_order"]["order_id"] == order["order_id"]
+    parts = chat.stored()[-1]["meta"]["parts"]
+    assert [(p["kind"], p["case_id"], p["case_state"]) for p in parts] == [
+        ("waiting_for_person", rows["item_missing_or_wrong"]["case_id"], "AWAITING_HUMAN"),
+        ("order_status", rows["where_is_my_order"]["case_id"], "RESOLVED")]
+    assert done["message"]["case_id"] == rows["item_missing_or_wrong"]["case_id"]
+
+
+def test_26_the_same_problem_twice_in_a_message_is_one_case(chat_as, data, model, cases):
     order = data.live_order("OUT_FOR_DELIVERY")
-    model.intakes.append(draft(issues=[issue("item_missing_or_wrong"), issue("where_is_my_order")]))
-    done = chat_as(order["customer_id"]).say(
-        "Yesterday's order had no bread in it, and also today's order has not come yet, where is it?")
-    text = check(done, "order_status", calls=1, state="RESOLVED", live=live, has=(order["order_id"], "on its way"))
-    assert text.endswith(replies.MORE_ISSUES.strip()) and len(cases()) == 1
+    model.intakes.append(draft(issues=[issue("where_is_my_order"), issue("where_is_my_order")]))
+    done = chat_as(order["customer_id"]).say("where is my order?? and when does my order come, where is it")
+    check(done, "order_status", calls=1, state="RESOLVED", has=(order["order_id"],))
+    assert len(cases()) == 1
+
+
+def test_27_each_problem_that_needs_a_question_waits_its_turn(chat_as, data, model, cases):
+    """two problems that each need a question: one question at a time, the other problem waits in it, and each
+    is worked after its answer."""
+    customer = data.customer_with_two_attempted_orders()
+    orders = data.by_customer[customer]
+    other = next(o for o in data.orders if o["customer_id"] != customer)
+    model.intakes.append(draft(issues=[issue("where_is_my_order", order_id=other["order_id"]),
+                                       issue("offers_coupons")]))
+    chat = chat_as(customer)
+    done = chat.say(f"where is {other['order_id']}? and my coupon didn't apply")
+    check(done, "ask_order", calls=1, has=(f"couldn't find order {other['order_id']}",))
+    assert cases() == [] and [i["case_type"] for i in chat.stored()[-1]["meta"]["pending"]["queue"]] == [
+        "offers_coupons"]
+
+    done = chat.press(done["message"]["chips"][0])  # the first order: where is it; then the coupon's question
+    text = check(done, "several", calls=0, has=(orders[0]["order_id"],))
+    assert text.endswith(replies.which_order("offers_coupons"))  # after another part, it names its problem
+    assert [c["issue_type"] for c in cases()] == ["where_is_my_order"]
+    chips = done["message"]["chips"]
+    assert {c["intent"]["case_type"] for c in chips} == {"offers_coupons"}
+
+    done = chat.press(chips[0])
+    assert done["message"]["kind"].startswith("coupon_") and done["llm_calls"] == 1
+    assert sorted(c["issue_type"] for c in cases()) == ["offers_coupons", "where_is_my_order"]
+
+
+def test_28_a_case_another_run_is_working_on_is_left_alone(chat_as, data, cases, backend_http, service):
+    """one run per case: while another run holds the case's lease, this one does not touch it."""
+    from hivemind_agents.case_store import CaseStore
+    from hivemind_agents.contracts import IntentHint
+
+    order = data.live_order("OUT_FOR_DELIVERY")
+    chat = chat_as(order["customer_id"])
+    _, token = service.deps.verifier.mint_case_token(order["customer_id"], "SES-000001", chat.conversation_id)
+    held = backend_http.post("/v1/cases", headers={"Authorization": f"Bearer {token}"},
+                             json={"issue_type": "where_is_my_order", "order_id": order["order_id"]}).json()
+    other_run = CaseStore(service.deps.store.conninfo, holder="other-run")
+    try:
+        assert other_run.acquire(held["case_id"]) is not None
+        intent = IntentHint(case_type="where_is_my_order", order_id=order["order_id"])
+        done = chat.say("where is my order", intent)
+        check(done, "case_busy", calls=0, state="OPEN", has=("already looking into this",))
+        assert [(c["case_id"], c["state"]) for c in cases()] == [(held["case_id"], "OPEN")]
+        other_run.release(held["case_id"])
+        done = chat.say("where is my order", intent)
+        check(done, "order_status", calls=0, state="RESOLVED")
+        assert done["message"]["case_id"] == held["case_id"]
+    finally:
+        other_run.close()
+
+
+def test_29_every_read_for_a_case_is_kept_as_its_proof_and_the_case_keeps_its_history(chat_as, data, cases,
+                                                                                         test_db_name):
+    from psycopg.rows import dict_row
+
+    from hivemind_agents import evidence
+    from hivemind_backend import db
+
+    order = data.live_order("OUT_FOR_DELIVERY")
+    chat_as(order["customer_id"]).say("where is my order")
+    (case,) = cases()
+    with db.connect("admin", dbname=test_db_name, row_factory=dict_row) as conn:
+        ledger = conn.execute("select * from agent.evidence_ledger where case_id = %s order by tool",
+                              (case["case_id"],)).fetchall()
+        events = conn.execute("select type, from_state, to_state, reason from support.case_events "
+                              "where case_id = %s order by seq", (case["case_id"],)).fetchall()
+    # the reads made for the case; the order list read before the case was opened is not proof for it
+    assert [r["tool"] for r in ledger] == ["getClock", "getOrder", "getOrderTrip"]
+    assert all(r["source"] == "simulated-business" for r in ledger)
+    for row in ledger:
+        assert evidence.matches({**row["payload"], "evidence_id": row["evidence_id"]})
+        assert row["sha256"] == evidence.body_hash(row["payload"])
+    assert [(e["type"], e["from_state"], e["to_state"], e["reason"]) for e in events] == [
+        ("opened", None, "OPEN", None), ("moved", "OPEN", "INVESTIGATING", None),
+        ("moved", "INVESTIGATING", "RESOLVED", "answered")]
+
+
+def test_30_a_missing_item_with_no_order_said_asks_which_delivered_order(chat_as, data, model, cases, live):
+    """a missing item can only be on a delivered order; when several could be meant, the customer picks one, and
+    the case opens on it."""
+    customer = next(c for c, orders in sorted(data.by_customer.items())
+                    if sum(o["status"] == "DELIVERED" for o in orders[:5]) >= 2
+                    and any(o["status"] != "DELIVERED" for o in orders[:5]))
+    delivered = [o["order_id"] for o in data.by_customer[customer][:5] if o["status"] in ("DELIVERED",
+                                                                                           "PARTIALLY_FULFILLED")]
+    model.intakes.append(draft(issues=[issue("item_missing_or_wrong", items=["bread"])], sentiment="negative"))
+    chat = chat_as(customer)
+    done = chat.say("There was no bread in my order")
+    check(done, "ask_order", calls=1, live=live, has=(replies.which_order(),))
+    assert cases() == []
+    chips = done["message"]["chips"]
+    assert [c["text"] for c in chips] == delivered  # only the orders a missing item can be on
+    done = chat.press(chips[-1])
+    check(done, "waiting_for_person", calls=0, state="AWAITING_HUMAN", has=("a missing or wrong item",))
+    (case,) = cases()
+    assert (case["issue_type"], case["order_id"]) == ("item_missing_or_wrong", delivered[-1])

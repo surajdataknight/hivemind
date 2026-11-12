@@ -576,3 +576,121 @@ def test_a_case_without_an_order_also_opens_once(client, test_db):
     again = client.post("/v1/cases", headers=who, json={"issue_type": "payment_failed"}).json()
     assert first["order_id"] is None and first["opened"] and not again["opened"]
     assert again["case_id"] == first["case_id"]
+
+
+# support: the case state machine and its history
+
+
+def case_events(case_id: str) -> list[dict]:
+    from psycopg.rows import dict_row
+
+    with db.connect("admin", row_factory=dict_row) as conn:
+        return conn.execute("select seq, type, from_state, to_state, reason from support.case_events "
+                            "where case_id = %s order by seq", (case_id,)).fetchall()
+
+
+def force_state(case_id: str, state: str) -> None:
+    """sets a case's state directly, as test setup; the api never does this."""
+    with db.connect("admin") as conn:
+        conn.execute("update support.cases set state = %s where case_id = %s", (state, case_id))
+
+
+def test_the_state_machine_names_the_contract_states():
+    from typing import get_args
+
+    from hivemind_backend import cases, models
+
+    assert set(cases.STATES) == set(get_args(models.CaseState)) == set(cases.TRANSITIONS)
+    assert all(to in cases.STATES for moves in cases.TRANSITIONS.values() for to in moves)
+    assert cases.TRANSITIONS["CLOSED"] == set()
+
+
+def test_every_state_but_closed_can_be_left_and_reached():
+    from hivemind_backend import cases
+
+    reachable, todo = {"OPEN"}, ["OPEN"]
+    while todo:
+        for to in cases.TRANSITIONS[todo.pop()]:
+            if to not in reachable:
+                reachable.add(to)
+                todo.append(to)
+    assert reachable == set(cases.STATES)
+    # from anywhere a case can still end: resolved or closed
+    for state in cases.STATES:
+        seen, todo = {state}, [state]
+        while todo:
+            for to in cases.TRANSITIONS[todo.pop()]:
+                if to not in seen:
+                    seen.add(to)
+                    todo.append(to)
+        assert "CLOSED" in seen, state
+
+
+@pytest.mark.db
+def test_every_move_between_two_states_is_allowed_or_refused_by_the_table(client, test_db):
+    """all 121 pairs: a legal move changes the state and is kept in the history; any other is refused (409) and
+    changes nothing; the same state again changes nothing either."""
+    from hivemind_backend import cases
+
+    order = test_db["orders.orders"][8]
+    who = bearer(order["customer_id"])
+    case = client.post("/v1/cases", headers=who, json={"issue_type": "quality", "order_id": order["order_id"]}).json()
+    path = "/v1/cases/{case_id}/state"
+    move = f"/v1/cases/{case['case_id']}/state"
+    for start in cases.STATES:
+        for to in cases.STATES:
+            force_state(case["case_id"], start)
+            before = len(case_events(case["case_id"]))
+            response = client.post(move, headers=who, json={"state": to, "reason": "test_move"})
+            if start == to:
+                assert check_body(path, response, "post")["state"] == start
+                assert len(case_events(case["case_id"])) == before
+            elif cases.can_move(start, to):
+                assert check_body(path, response, "post")["state"] == to, (start, to)
+                last = case_events(case["case_id"])[-1]
+                assert (last["type"], last["from_state"], last["to_state"], last["reason"]) == (
+                    "moved", start, to, "test_move")
+            else:
+                check_problem(path, response, 409, "post")
+                assert len(case_events(case["case_id"])) == before, (start, to)
+    force_state(case["case_id"], "CLOSED")
+
+
+@pytest.mark.db
+def test_a_case_keeps_its_history(client, test_db):
+    order = test_db["orders.orders"][9]
+    who = bearer(order["customer_id"])
+    ask = {"issue_type": "refund", "order_id": order["order_id"]}
+    case = client.post("/v1/cases", headers=who, json=ask).json()
+    client.post("/v1/cases", headers=who, json=ask)  # a second message about the same problem
+    move = f"/v1/cases/{case['case_id']}/state"
+    client.post(move, headers=who, json={"state": "INVESTIGATING"})
+    client.post(move, headers=who, json={"state": "INVESTIGATING"})  # a repeat: no new line
+    client.post(move, headers=who, json={"state": "AWAITING_HUMAN", "reason": "no_path_yet"})
+    client.post(move, headers=who, json={"state": "OPEN"})  # refused: no line
+    assert [(e["seq"], e["type"], e["from_state"], e["to_state"], e["reason"]) for e in case_events(case["case_id"])] == [
+        (1, "opened", None, "OPEN", None),
+        (2, "attached", "OPEN", "OPEN", None),
+        (3, "moved", "OPEN", "INVESTIGATING", None),
+        (4, "moved", "INVESTIGATING", "AWAITING_HUMAN", "no_path_yet"),
+    ]
+    bad = client.post(move, headers=who, json={"state": "RESOLVED", "reason": "Not A Code"})
+    check_problem("/v1/cases/{case_id}/state", bad, 422, "post")
+
+
+@pytest.mark.db
+def test_a_resolved_case_reopens_only_when_no_other_case_about_it_is_open(client, test_db):
+    order = test_db["orders.orders"][10]
+    who = bearer(order["customer_id"])
+    ask = {"issue_type": "cancellation", "order_id": order["order_id"]}
+    first = client.post("/v1/cases", headers=who, json=ask).json()
+    move = f"/v1/cases/{first['case_id']}/state"
+    for state in ("INVESTIGATING", "RESOLVED"):
+        client.post(move, headers=who, json={"state": state})
+    second = client.post("/v1/cases", headers=who, json=ask).json()
+    assert second["opened"] and second["case_id"] != first["case_id"]
+    body = check_problem("/v1/cases/{case_id}/state", client.post(move, headers=who, json={"state": "REOPENED"}),
+                         409, "post")
+    assert second["case_id"] in body["detail"]
+    force_state(second["case_id"], "CLOSED")
+    assert client.post(move, headers=who, json={"state": "REOPENED"}).json()["state"] == "REOPENED"

@@ -428,3 +428,5 @@ class OpenedCase(Case):
 
 class CaseStateRequest(BaseModel):
     state: CaseState
+    reason: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,59}$", examples=["reply_sent"],
+                               description="why the case moves, as a short code; kept in the case's history")
