@@ -1,13 +1,14 @@
 [project]
 name = "hivemind-backend"
 version = "0.0.0"
-description = "simulated quick-commerce grocery business: postgres schemas and read apis"
+description = "simulated quick-commerce grocery business: postgres schemas and apis"
 requires-python = "==3.12.*"
 dependencies = [
     "fastapi==0.162.4",
     "uvicorn==0.54.0",
     "pydantic==2.14.3",
     "psycopg[binary]==3.3.8",
+    "pyjwt==2.15.1",
 ]
 
 [project.scripts]

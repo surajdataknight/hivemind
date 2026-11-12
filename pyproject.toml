@@ -3,7 +3,7 @@ name = "hivemind"
 version = "0.0.0"
 description = "multi-agent customer support for a simulated quick-commerce grocery business"
 requires-python = "==3.12.*"
-dependencies = ["hivemind-backend", "hivemind-datagen"]
+dependencies = ["hivemind-backend", "hivemind-datagen", "hivemind-agents"]
 
 [dependency-groups]
 dev = [
@@ -16,13 +16,18 @@ dev = [
 package = false
 
 [tool.uv.workspace]
-members = ["backend", "datagen"]
+members = ["backend", "datagen", "agents"]
 
 [tool.uv.sources]
 hivemind-backend = { workspace = true }
 hivemind-datagen = { workspace = true }
+hivemind-agents = { workspace = true }
 
 [tool.pytest.ini_options]
-testpaths = ["datagen/tests", "backend/tests"]
-markers = ["db: needs the local postgres started by docker compose"]
+testpaths = ["datagen/tests", "backend/tests", "agents/tests"]
+markers = [
+    "db: needs the local postgres started by docker compose",
+    "live_capable: runs on the real models when --live-llm is given",
+]
 addopts = "--import-mode=importlib"
+pythonpath = ["agents/tests"]

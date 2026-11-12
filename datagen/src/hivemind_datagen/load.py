@@ -43,4 +43,8 @@ def load(tables: dict[str, list[dict]], dbname: str | None = None) -> None:
                 with cur.copy(statement) as copy:
                     for row in rows:
                         copy.write_row([_value(row[c]) for c in columns])
+        # the business's clock stops where the data ends
+        as_of = tables["truth.generation_runs"][0]["generated_at"]
+        conn.execute("insert into public.sim_clock (only_row, now) values (true, %s) "
+                     "on conflict (only_row) do update set now = excluded.now", (as_of,))
         conn.commit()

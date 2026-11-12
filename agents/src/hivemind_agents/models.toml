@@ -1,0 +1,16 @@
+# which model does each llm job: the only place a model name is written
+# a job not listed here has no model yet
+
+[providers.google]
+# google ai studio, free tier; the key is read from this environment variable
+key_env = "GEMINI_API_KEY"
+
+[jobs.intake]
+provider = "google"
+model = "gemini-3.5-flash-lite"
+temperature = 0.0
+
+[jobs.communicator]
+provider = "google"
+model = "gemini-3.5-flash-lite"
+temperature = 0.3

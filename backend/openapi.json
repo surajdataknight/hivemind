@@ -2,29 +2,32 @@
   "openapi": "3.1.0",
   "info": {
     "title": "HiveMind simulated business",
-    "description": "read apis of the simulated quick-commerce grocery business. money is integer paise; times are rfc 3339 utc; errors are rfc 9457 problem details. every body carries an evidence_id.",
-    "version": "0.1.0"
+    "description": "apis of the simulated quick-commerce grocery business. money is integer paise; times are rfc 3339 utc; errors are rfc 9457 problem details. every read carries an evidence_id. every api except the fake sign-in needs a case token (`Authorization: Bearer ...`); the customer comes from that token, never from the url.",
+    "version": "0.2.0"
   },
   "paths": {
-    "/v1/orders/{order_id}": {
+    "/v1/clock": {
       "get": {
         "tags": [
-          "orders"
+          "clock"
         ],
-        "summary": "one order with its lines and status history",
-        "operationId": "getOrder",
+        "summary": "the simulated business's current time",
+        "operationId": "getClock",
         "parameters": [
           {
-            "name": "order_id",
-            "in": "path",
-            "required": true,
+            "name": "authorization",
+            "in": "header",
+            "required": false,
             "schema": {
-              "type": "string",
-              "pattern": "^ORD-\\d{6}$",
-              "examples": [
-                "ORD-100123"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
               ],
-              "title": "Order Id"
+              "title": "Authorization"
             }
           }
         ],
@@ -34,10 +37,161 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OrderResponse"
+                  "$ref": "#/components/schemas/ClockResponse"
                 }
               }
             }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/identity/sign-in-options": {
+      "get": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "fake sign-in: a few customers to sign in as",
+        "operationId": "listSignInOptions",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInOptions"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/identity/sessions": {
+      "post": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "fake sign-in: a session token for a customer, no password asked",
+        "operationId": "signIn",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "the token's customer",
+        "operationId": "getMe",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -62,27 +216,106 @@
         }
       }
     },
-    "/v1/customers/{customer_id}/orders": {
+    "/v1/orders/{order_id}": {
       "get": {
         "tags": [
           "orders"
         ],
-        "summary": "a customer's orders, newest first",
-        "operationId": "listCustomerOrders",
+        "summary": "one order with its lines and status history",
+        "operationId": "getOrder",
         "parameters": [
           {
-            "name": "customer_id",
+            "name": "order_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^CUST-\\d{5}$",
+              "pattern": "^ORD-\\d{6}$",
               "examples": [
-                "CUST-00042"
+                "ORD-100123"
               ],
-              "title": "Customer Id"
+              "title": "Order Id"
             }
           },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/me/orders": {
+      "get": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "the token's customer's orders, newest first",
+        "operationId": "listMyOrders",
+        "parameters": [
           {
             "name": "limit",
             "in": "query",
@@ -93,6 +326,22 @@
               "minimum": 1,
               "default": 20,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
             }
           }
         ],
@@ -106,6 +355,26 @@
                 }
               }
             }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -150,6 +419,22 @@
               ],
               "title": "Order Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -162,6 +447,26 @@
                 }
               }
             }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -230,6 +535,22 @@
               "title": "Until"
             },
             "description": "rfc 3339, exclusive; at most 7 days after since"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -242,6 +563,26 @@
                 }
               }
             }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -323,6 +664,22 @@
               "title": "Until"
             },
             "description": "rfc 3339, exclusive; at most 7 days after since"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -335,6 +692,26 @@
                 }
               }
             }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -379,6 +756,22 @@
               ],
               "title": "Order Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -391,6 +784,26 @@
                 }
               }
             }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -435,6 +848,22 @@
               ],
               "title": "Order Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -447,6 +876,26 @@
                 }
               }
             }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -491,6 +940,22 @@
               ],
               "title": "Order Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -503,6 +968,26 @@
                 }
               }
             }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -547,6 +1032,22 @@
               ],
               "title": "Order Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -559,6 +1060,26 @@
                 }
               }
             }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -603,6 +1124,22 @@
               ],
               "title": "Order Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -615,6 +1152,26 @@
                 }
               }
             }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -635,6 +1192,495 @@
               }
             },
             "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/promotions/offers/{code}": {
+      "get": {
+        "tags": [
+          "promotions"
+        ],
+        "summary": "one offer with its terms",
+        "operationId": "getOffer",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Z0-9]{3,20}$",
+              "examples": [
+                "SAVE10"
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfferResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/me/redemptions": {
+      "get": {
+        "tags": [
+          "promotions"
+        ],
+        "summary": "the token's customer's coupon attempts, newest first",
+        "operationId": "listMyRedemptions",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedemptionsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/orders/{order_id}/promotion-evaluation": {
+      "get": {
+        "tags": [
+          "promotions"
+        ],
+        "summary": "the offer's rules run again on the order: what it should have given, and what it gave",
+        "operationId": "evaluatePromotion",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^ORD-\\d{6}$",
+              "examples": [
+                "ORD-100123"
+              ],
+              "title": "Order Id"
+            }
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Z0-9]{3,20}$",
+              "examples": [
+                "SAVE10"
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromotionEvaluationResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/cases": {
+      "post": {
+        "tags": [
+          "support"
+        ],
+        "summary": "the open case for this customer, order and issue; opened if there is none",
+        "operationId": "openCase",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaseOpenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenedCase"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/cases/{case_id}/state": {
+      "post": {
+        "tags": [
+          "support"
+        ],
+        "summary": "move a case to its next state; the same state again changes nothing",
+        "operationId": "moveCase",
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^CASE-[0-9A-F]{12}$",
+              "examples": [
+                "CASE-0123456789AB"
+              ],
+              "title": "Case Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaseStateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Case"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
           }
         }
       }
@@ -671,6 +1717,198 @@
           "captured_at"
         ],
         "title": "Capture"
+      },
+      "Case": {
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "order_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Id"
+          },
+          "issue_type": {
+            "type": "string",
+            "enum": [
+              "where_is_my_order",
+              "item_missing_or_wrong",
+              "quality",
+              "cancellation",
+              "refund",
+              "payment_failed",
+              "delivery_partner_behaviour",
+              "offers_coupons"
+            ],
+            "title": "Issue Type"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "OPEN",
+              "INVESTIGATING",
+              "DECIDING",
+              "AWAITING_CUSTOMER",
+              "AWAITING_HUMAN",
+              "PENDING_SYSTEM",
+              "ACTIONING",
+              "ESCALATED",
+              "RESOLVED",
+              "CLOSED",
+              "REOPENED"
+            ],
+            "title": "State"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "case_id",
+          "customer_id",
+          "order_id",
+          "issue_type",
+          "state",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "Case"
+      },
+      "CaseOpenRequest": {
+        "properties": {
+          "order_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^ORD-\\d{6}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Id"
+          },
+          "issue_type": {
+            "type": "string",
+            "enum": [
+              "where_is_my_order",
+              "item_missing_or_wrong",
+              "quality",
+              "cancellation",
+              "refund",
+              "payment_failed",
+              "delivery_partner_behaviour",
+              "offers_coupons"
+            ],
+            "title": "Issue Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "issue_type"
+        ],
+        "title": "CaseOpenRequest"
+      },
+      "CaseStateRequest": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "OPEN",
+              "INVESTIGATING",
+              "DECIDING",
+              "AWAITING_CUSTOMER",
+              "AWAITING_HUMAN",
+              "PENDING_SYSTEM",
+              "ACTIONING",
+              "ESCALATED",
+              "RESOLVED",
+              "CLOSED",
+              "REOPENED"
+            ],
+            "title": "State"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "title": "CaseStateRequest"
+      },
+      "Checkout": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "rejected"
+            ],
+            "title": "Status"
+          },
+          "discount_paise": {
+            "type": "integer",
+            "title": "Discount Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "discount_paise",
+          "reason"
+        ],
+        "title": "Checkout"
+      },
+      "ClockResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "now": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Now",
+            "description": "the simulated business's current time: the moment its made-up data ends"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "now"
+        ],
+        "title": "ClockResponse"
       },
       "GatewayEvent": {
         "properties": {
@@ -741,6 +1979,19 @@
           "lng"
         ],
         "title": "GpsPoint"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
       },
       "Incident": {
         "properties": {
@@ -828,6 +2079,35 @@
         ],
         "title": "IncidentsResponse"
       },
+      "MeResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "customer_id",
+          "name",
+          "language"
+        ],
+        "title": "MeResponse"
+      },
       "MissingScan": {
         "properties": {
           "sku": {
@@ -854,6 +2134,227 @@
           "expected"
         ],
         "title": "MissingScan"
+      },
+      "OfferResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "flat",
+              "percent",
+              "free_delivery"
+            ],
+            "title": "Kind"
+          },
+          "value": {
+            "type": "integer",
+            "title": "Value",
+            "description": "flat: paise off; percent: percent off the item total; free_delivery: unused"
+          },
+          "max_discount_paise": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "money in integer paise (1 rupee = 100 paise)"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Discount Paise"
+          },
+          "min_cart_paise": {
+            "type": "integer",
+            "title": "Min Cart Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "first_order_only": {
+            "type": "boolean",
+            "title": "First Order Only"
+          },
+          "valid_from": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Valid From"
+          },
+          "valid_to": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Valid To"
+          },
+          "terms": {
+            "type": "string",
+            "title": "Terms"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "code",
+          "title",
+          "kind",
+          "value",
+          "max_discount_paise",
+          "min_cart_paise",
+          "first_order_only",
+          "valid_from",
+          "valid_to",
+          "terms"
+        ],
+        "title": "OfferResponse"
+      },
+      "OfferRules": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "flat",
+              "percent",
+              "free_delivery"
+            ],
+            "title": "Kind"
+          },
+          "value": {
+            "type": "integer",
+            "title": "Value"
+          },
+          "max_discount_paise": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "money in integer paise (1 rupee = 100 paise)"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Discount Paise"
+          },
+          "min_cart_paise": {
+            "type": "integer",
+            "title": "Min Cart Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "first_order_only": {
+            "type": "boolean",
+            "title": "First Order Only"
+          },
+          "valid_from": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Valid From"
+          },
+          "valid_to": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Valid To"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "value",
+          "max_discount_paise",
+          "min_cart_paise",
+          "first_order_only",
+          "valid_from",
+          "valid_to"
+        ],
+        "title": "OfferRules"
+      },
+      "OpenedCase": {
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "order_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Id"
+          },
+          "issue_type": {
+            "type": "string",
+            "enum": [
+              "where_is_my_order",
+              "item_missing_or_wrong",
+              "quality",
+              "cancellation",
+              "refund",
+              "payment_failed",
+              "delivery_partner_behaviour",
+              "offers_coupons"
+            ],
+            "title": "Issue Type"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "OPEN",
+              "INVESTIGATING",
+              "DECIDING",
+              "AWAITING_CUSTOMER",
+              "AWAITING_HUMAN",
+              "PENDING_SYSTEM",
+              "ACTIONING",
+              "ESCALATED",
+              "RESOLVED",
+              "CLOSED",
+              "REOPENED"
+            ],
+            "title": "State"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "opened": {
+            "type": "boolean",
+            "title": "Opened",
+            "description": "true when this call opened the case; false when it was already open"
+          }
+        },
+        "type": "object",
+        "required": [
+          "case_id",
+          "customer_id",
+          "order_id",
+          "issue_type",
+          "state",
+          "created_at",
+          "updated_at",
+          "opened"
+        ],
+        "title": "OpenedCase"
       },
       "OrderHistoryResponse": {
         "properties": {
@@ -1064,6 +2565,37 @@
           "status_history"
         ],
         "title": "OrderResponse"
+      },
+      "OrderSnapshot": {
+        "properties": {
+          "item_total_paise": {
+            "type": "integer",
+            "title": "Item Total Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "delivery_fee_paise": {
+            "type": "integer",
+            "title": "Delivery Fee Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "placed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Placed At"
+          },
+          "first_order": {
+            "type": "boolean",
+            "title": "First Order"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_total_paise",
+          "delivery_fee_paise",
+          "placed_at",
+          "first_order"
+        ],
+        "title": "OrderSnapshot"
       },
       "OrderSummary": {
         "properties": {
@@ -1319,6 +2851,101 @@
         "title": "Problem",
         "description": "rfc 9457 problem details."
       },
+      "PromotionEvaluationResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "rules": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OfferRules"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null when no offer has this code"
+          },
+          "order": {
+            "$ref": "#/components/schemas/OrderSnapshot"
+          },
+          "eligible": {
+            "type": "boolean",
+            "title": "Eligible"
+          },
+          "due_discount_paise": {
+            "type": "integer",
+            "title": "Due Discount Paise",
+            "description": "what the offer's rules give this order; 0 when not eligible"
+          },
+          "failed_rule": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "unknown_code",
+                  "not_started",
+                  "expired",
+                  "first_order_only",
+                  "min_cart",
+                  "delivery_already_free"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed Rule"
+          },
+          "checkout": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Checkout"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "what happened to this code at checkout; null when never tried"
+          },
+          "applied_discount_paise": {
+            "type": "integer",
+            "title": "Applied Discount Paise",
+            "description": "the discount the order really got from this code"
+          },
+          "difference_paise": {
+            "type": "integer",
+            "title": "Difference Paise",
+            "description": "due minus applied; above 0 the customer got less than the rules give"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "order_id",
+          "code",
+          "rules",
+          "order",
+          "eligible",
+          "due_discount_paise",
+          "failed_rule",
+          "checkout",
+          "applied_discount_paise",
+          "difference_paise"
+        ],
+        "title": "PromotionEvaluationResponse"
+      },
       "ProofOfDeliveryResponse": {
         "properties": {
           "evidence_id": {
@@ -1368,6 +2995,89 @@
           "delivered_at"
         ],
         "title": "ProofOfDeliveryResponse"
+      },
+      "Redemption": {
+        "properties": {
+          "redemption_id": {
+            "type": "string",
+            "title": "Redemption Id"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "rejected"
+            ],
+            "title": "Status"
+          },
+          "discount_paise": {
+            "type": "integer",
+            "title": "Discount Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "redemption_id",
+          "code",
+          "order_id",
+          "status",
+          "discount_paise",
+          "reason",
+          "at"
+        ],
+        "title": "Redemption"
+      },
+      "RedemptionsResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "redemptions": {
+            "items": {
+              "$ref": "#/components/schemas/Redemption"
+            },
+            "type": "array",
+            "title": "Redemptions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "customer_id",
+          "redemptions"
+        ],
+        "title": "RedemptionsResponse"
       },
       "Refund": {
         "properties": {
@@ -1555,6 +3265,96 @@
           "missing_scans"
         ],
         "title": "ScansResponse"
+      },
+      "Session": {
+        "properties": {
+          "session_token": {
+            "type": "string",
+            "title": "Session Token",
+            "description": "hs256 jwt; send it to hivemind, which checks it"
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_token",
+          "customer_id",
+          "name",
+          "expires_at"
+        ],
+        "title": "Session"
+      },
+      "SessionRequest": {
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "pattern": "^CUST-\\d{5}$",
+            "title": "Customer Id",
+            "examples": [
+              "CUST-00042"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "customer_id"
+        ],
+        "title": "SessionRequest"
+      },
+      "SignInOption": {
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Hints",
+            "description": "what this customer's recent orders hold, to pick one for a demo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "customer_id",
+          "name",
+          "hints"
+        ],
+        "title": "SignInOption"
+      },
+      "SignInOptions": {
+        "properties": {
+          "customers": {
+            "items": {
+              "$ref": "#/components/schemas/SignInOption"
+            },
+            "type": "array",
+            "title": "Customers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "customers"
+        ],
+        "title": "SignInOptions"
       },
       "StatusChange": {
         "properties": {
@@ -1758,6 +3558,46 @@
           "gps_points"
         ],
         "title": "TripResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
       }
     }
   }

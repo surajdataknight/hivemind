@@ -8,6 +8,28 @@ import pytest
 TEST_DB = "hivemind_test"
 TEST_SEED = 42
 
+# the tests sign their own tokens; a real .env is not needed for these two
+os.environ.setdefault("HM_SESSION_SECRET", "test-only-session-signing-key-0123456789")
+os.environ.setdefault("HM_CASE_TOKEN_SECRET", "test-only-case-token-signing-key-0123456789")
+
+
+def pytest_addoption(parser):
+    parser.addoption("--live-llm", action="store_true", default=False,
+                     help="the scripted chats use the real models: needs GEMINI_API_KEY, and sends the made-up "
+                          "chat text to google")
+    parser.addoption("--live-pause", type=float, default=5.0,
+                     help="seconds to wait after each live chat, to stay inside the free per-minute limits")
+
+
+@pytest.fixture(scope="session")
+def live(request) -> bool:
+    return request.config.getoption("--live-llm")
+
+
+@pytest.fixture(scope="session")
+def live_pause(request) -> float:
+    return request.config.getoption("--live-pause")
+
 
 @pytest.fixture(scope="session")
 def test_db():

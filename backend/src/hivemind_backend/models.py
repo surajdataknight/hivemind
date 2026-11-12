@@ -271,3 +271,160 @@ class Refunds(BaseModel):
 
 class RefundsResponse(Refunds, Evidenced):
     pass
+
+
+# clock
+
+
+class Clock(BaseModel):
+    now: UtcDatetime = Field(description="the simulated business's current time: the moment its made-up data ends")
+
+
+class ClockResponse(Clock, Evidenced):
+    pass
+
+
+# identity: the fake sign-in
+
+
+class SignInOption(BaseModel):
+    customer_id: str
+    name: str
+    hints: list[str] = Field(description="what this customer's recent orders hold, to pick one for a demo")
+
+
+class SignInOptions(BaseModel):
+    customers: list[SignInOption]
+
+
+class SessionRequest(BaseModel):
+    customer_id: str = Field(pattern=r"^CUST-\d{5}$", examples=["CUST-00042"])
+
+
+class Session(BaseModel):
+    session_token: str = Field(description="hs256 jwt; send it to hivemind, which checks it")
+    customer_id: str
+    name: str
+    expires_at: UtcDatetime
+
+
+class Me(BaseModel):
+    customer_id: str
+    name: str
+    language: str
+
+
+class MeResponse(Me, Evidenced):
+    pass
+
+
+# promotions
+
+
+class Offer(BaseModel):
+    code: str
+    title: str
+    kind: Literal["flat", "percent", "free_delivery"]
+    value: int = Field(description="flat: paise off; percent: percent off the item total; free_delivery: unused")
+    max_discount_paise: Paise | None
+    min_cart_paise: Paise
+    first_order_only: bool
+    valid_from: UtcDatetime
+    valid_to: UtcDatetime
+    terms: str
+
+
+class OfferResponse(Offer, Evidenced):
+    pass
+
+
+class Redemption(BaseModel):
+    redemption_id: str
+    code: str
+    order_id: str
+    status: Literal["applied", "rejected"]
+    discount_paise: Paise
+    reason: str | None
+    at: UtcDatetime
+
+
+class Redemptions(BaseModel):
+    customer_id: str
+    redemptions: list[Redemption]
+
+
+class RedemptionsResponse(Redemptions, Evidenced):
+    pass
+
+
+class OfferRules(BaseModel):
+    kind: Literal["flat", "percent", "free_delivery"]
+    value: int
+    max_discount_paise: Paise | None
+    min_cart_paise: Paise
+    first_order_only: bool
+    valid_from: UtcDatetime
+    valid_to: UtcDatetime
+
+
+class OrderSnapshot(BaseModel):
+    item_total_paise: Paise
+    delivery_fee_paise: Paise
+    placed_at: UtcDatetime
+    first_order: bool
+
+
+class Checkout(BaseModel):
+    status: Literal["applied", "rejected"]
+    discount_paise: Paise
+    reason: str | None
+
+
+class PromotionEvaluation(BaseModel):
+    order_id: str
+    code: str
+    rules: OfferRules | None = Field(description="null when no offer has this code")
+    order: OrderSnapshot
+    eligible: bool
+    due_discount_paise: Paise = Field(description="what the offer's rules give this order; 0 when not eligible")
+    failed_rule: Literal["unknown_code", "not_started", "expired", "first_order_only", "min_cart",
+                         "delivery_already_free"] | None
+    checkout: Checkout | None = Field(description="what happened to this code at checkout; null when never tried")
+    applied_discount_paise: Paise = Field(description="the discount the order really got from this code")
+    difference_paise: int = Field(description="due minus applied; above 0 the customer got less than the rules give")
+
+
+class PromotionEvaluationResponse(PromotionEvaluation, Evidenced):
+    pass
+
+
+# support: cases
+
+
+IssueType = Literal["where_is_my_order", "item_missing_or_wrong", "quality", "cancellation", "refund",
+                    "payment_failed", "delivery_partner_behaviour", "offers_coupons"]
+CaseState = Literal["OPEN", "INVESTIGATING", "DECIDING", "AWAITING_CUSTOMER", "AWAITING_HUMAN", "PENDING_SYSTEM",
+                    "ACTIONING", "ESCALATED", "RESOLVED", "CLOSED", "REOPENED"]
+
+
+class CaseOpenRequest(BaseModel):
+    order_id: str | None = Field(default=None, pattern=r"^ORD-\d{6}$")
+    issue_type: IssueType
+
+
+class Case(BaseModel):
+    case_id: str
+    customer_id: str
+    order_id: str | None
+    issue_type: IssueType
+    state: CaseState
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
+
+
+class OpenedCase(Case):
+    opened: bool = Field(description="true when this call opened the case; false when it was already open")
+
+
+class CaseStateRequest(BaseModel):
+    state: CaseState
