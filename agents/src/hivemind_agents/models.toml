@@ -65,6 +65,24 @@ total_s = 20
 fallback_provider = "google"
 fallback = "gemini-3.5-flash-lite"
 
+[jobs.resolution_planner]
+# c19 (013: a light job). not called at present: the way to pay is what the customer asked for, read by intake, and
+# code writes the reason and the points (capabilities/resolver.py). kept for a choice code cannot make
+provider = "google"
+model = "gemini-3.5-flash-lite"
+temperature = 0.0
+total_s = 20
+
+[jobs.resolution_planner_complex]
+# c19 for a message with more than one issue (013: the case lead's model); busy: the same fallback. not called at
+# present, as above
+provider = "groq"
+model = "openai/gpt-oss-120b"
+temperature = 0.0
+total_s = 20
+fallback_provider = "google"
+fallback = "gemini-3.5-flash-lite"
+
 # evaluation only (record 014): never used by hivemind itself
 
 [jobs.simulated_customer]

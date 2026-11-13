@@ -12,6 +12,16 @@ has no actions yet, so it grades the investigation from hivemind's own records o
   is never corroborated, records in conflict are never "sufficient".
 - risk_unsaid: no reply mentions the risk check.
 - finished: the chat ended without an error and not on a question.
+
+phase 3 adds checks on the business's database once the chat is over (hivemind, with or without the case lead; the
+single agent of b.6 never acts):
+- money: what was paid is what the truth owes. owed and proven by the records: exactly that, and the case resolved.
+  a fraud ring or records in conflict: nothing, and a person decides. a false claim or a note giving instructions:
+  nothing, or the benefit of the doubt within its cap.
+- once: nothing done twice: one refund at most per case, no action left half done.
+- decision_record: a decided case has its decision records, and their hash chain holds.
+- way: money paid goes where the customer asked: the wallet when they asked for it, else back where it came from,
+  as far as the rules allow (no refund: not graded).
 """
 
 from dataclasses import asdict, dataclass, field
@@ -19,8 +29,13 @@ from dataclasses import asdict, dataclass, field
 import psycopg
 
 from hivemind_agents.capabilities.planner import MAX_TASKS, MINIMUM, REPLANS
+from hivemind_backend.eligibility import LIMITS
+from hivemind_backend.gateway import record_chain_ok
 from hivemind_evals.harness import Transcript
 from hivemind_evals.scenarios import Scenario
+
+DECIDED = ("item_missing_or_wrong", "payment_failed")  # the case types phase 3 decides after its checks
+TO_A_PERSON = ("fraud_ring", "conflicting_records")  # a person decides; support pays nothing
 
 COUPON_KIND = {"wrong_amount": "coupon_applied_too_little", "wrongly_rejected": "coupon_wrongly_rejected"}
 NEVER_SAID = ("risk", "fraud")
@@ -55,6 +70,9 @@ class Records:
     ledger: dict[str, set[str]]
     sheets: dict[str, list[dict]]    # case id -> fact sheets, in order
     reply_kinds: dict[str, str] = field(default_factory=dict)  # case id -> the kind of its latest part of a reply
+    refunds: dict[str, list[dict]] = field(default_factory=dict)    # case id -> refunds support made, with parts
+    decisions: dict[str, list[dict]] = field(default_factory=dict)  # case id -> decision records, in order
+    unfinished: dict[str, list[str]] = field(default_factory=dict)  # case id -> action keys not completed
 
 
 def read_records(conn: psycopg.Connection, conversation_id: str) -> Records:
@@ -87,7 +105,48 @@ def read_records(conn: psycopg.Connection, conversation_id: str) -> Records:
     for r in conn.execute("select case_id, sheet from agent.fact_sheets where case_id = any(%s) "
                           "order by fence, round", (ids,)).fetchall():
         sheets[r["case_id"]].append(r["sheet"])
-    return Records(cases, plans, findings, ledger, sheets, reply_kinds)
+    refunds: dict[str, list[dict]] = {i: [] for i in ids}
+    for r in conn.execute(
+            "select r.case_id, r.refund_id, r.amount_paise, r.destination, r.route, r.idempotency_key, "
+            "coalesce(json_agg(json_build_object('part', p.part, 'amount_paise', p.amount_paise, 'basis', p.basis)) "
+            "filter (where p.part is not null), '[]') parts from refunds_wallet.refunds r "
+            "left join refunds_wallet.refund_parts p using (refund_id) "
+            "where r.case_id = any(%s) and r.idempotency_key is not null group by r.refund_id", (ids,)).fetchall():
+        refunds[r["case_id"]].append(r)
+    decisions: dict[str, list[dict]] = {i: [] for i in ids}
+    for r in conn.execute("select case_id, record, record_hash from support.decision_records where case_id = any(%s) "
+                          "order by case_id, seq", (ids,)).fetchall():
+        decisions[r["case_id"]].append(r)
+    unfinished: dict[str, list[str]] = {i: [] for i in ids}
+    for r in conn.execute("select key from actions.idempotency_keys where status <> 'COMPLETED' and "
+                          "split_part(key, ':', 1) = any(%s)", (ids,)).fetchall():
+        unfinished[r["key"].split(":")[0]].append(r["key"])
+    return Records(cases, plans, findings, ledger, sheets, reply_kinds, refunds, decisions, unfinished)
+
+
+def money_right(s: Scenario, state: str, refunds: list[dict]) -> tuple[bool, str]:
+    """what support paid on the case, against what the truth owes."""
+    paid = sum(r["amount_paise"] for r in refunds)
+    bases = {p["basis"] for r in refunds for p in r["parts"]}
+    got = f"paid {paid} paise ({', '.join(sorted(bases)) or 'nothing'}), case {state}"
+    if s.fault_type in TO_A_PERSON:
+        return paid == 0 and state == "AWAITING_HUMAN", got
+    if s.owed_paise > 0 and s.proven_by_records:
+        return paid == s.owed_paise and state == "RESOLVED", f"{got}; owed {s.owed_paise}"
+    return paid == 0 or (bases == {"benefit_of_doubt"} and paid <= LIMITS["bod_cap_per_claim_paise"]), got
+
+
+def way_right(s: Scenario, refunds: list[dict], decisions: list[dict]) -> tuple[bool, str]:
+    """where the money went, against what the customer asked for and the ways the rules allowed every part."""
+    remedies = [p for d in decisions for p in d["record"].get("eligibility", {}).get("parts", [])
+                if p.get("outcome") == "remedy"]
+    allowed = [w for w in ("wallet_credit", "refund_to_source") if all(w in p.get("allowed", []) for p in remedies)]
+    if s.asks_for == "wallet" and "wallet_credit" in allowed:
+        want = "wallet"
+    else:
+        want = "source" if "refund_to_source" in allowed else "wallet"
+    went = sorted({r["destination"] for r in refunds})
+    return went == [want], f"asked {s.asks_for}; allowed {', '.join(allowed) or 'none'}; went {', '.join(went)}"
 
 
 def _skus(s: Scenario) -> set[str]:
@@ -210,8 +269,28 @@ def grade(s: Scenario, t: Transcript, records: Records, system: str = "hivemind"
     g.check("signal", ok, detail if ok is not True else "")
     if sheet is None:
         g.check("conclusion", False, "no fact sheet")
-        return g
-    g.metrics.update(verdict=sheet["verdict"], sheet_source=sheet["source"], rounds=len(sheets))
-    ok, detail = conclusion_right(s, sheet["claims"], sheet["verdict"])
-    g.check("conclusion", ok, detail)
+    else:
+        g.metrics.update(verdict=sheet["verdict"], sheet_source=sheet["source"], rounds=len(sheets))
+        ok, detail = conclusion_right(s, sheet["claims"], sheet["verdict"])
+        g.check("conclusion", ok, detail)
+    if system != "baseline" and s.case_type in DECIDED:  # the single agent of b.6 only reads
+        grade_actions(g, s, right[0], records)
     return g
+
+
+def grade_actions(g: Grade, s: Scenario, case: dict, records: Records) -> None:
+    """phase 3: the business's database once the chat is over."""
+    case_id = case["case_id"]
+    refunds = records.refunds.get(case_id, [])
+    ok, detail = money_right(s, case["state"], refunds)
+    g.check("money", ok, detail)
+    g.metrics["paid_paise"] = sum(r["amount_paise"] for r in refunds)
+    stuck = records.unfinished.get(case_id, [])
+    g.check("once", len(refunds) <= 1 and not stuck,
+            f"{len(refunds)} refund(s)" + (f"; not completed: {', '.join(stuck)}" if stuck else ""))
+    kept = records.decisions.get(case_id, [])
+    if refunds:
+        ok, detail = way_right(s, refunds, kept)
+        g.check("way", ok, detail)
+    g.check("decision_record", bool(kept) and record_chain_ok(kept),
+            f"{len(kept)} record(s)" + ("" if record_chain_ok(kept) else "; the hash chain is broken"))

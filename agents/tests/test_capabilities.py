@@ -243,7 +243,8 @@ def test_after_the_question_was_asked_again_a_message_is_read_as_new_and_nothing
     # a new problem: worked first; the unanswered one and the one queued behind it come after it
     model = OneDraft({"scope": "in_scope", "issues": [
         {"case_type": "payment_failed", "order_id": None, "items_mentioned": [], "claimed_amount_rupees": 250,
-         "coupon_code": None, "about_latest_order": False, "order_day": None}],
+         "coupon_code": None, "about_latest_order": False, "order_day": None,
+         "money_to": "not_said"}],
         "sentiment": "negative", "urgency": "normal", "language": "en", "needs_clarification": False})
     result = intake.intake("forget that, I was charged twice for something", None, again, [], [], model)
     assert model.asked == 1 and not result.ask_again
@@ -304,6 +305,63 @@ def test_a_bad_code_or_amount_is_dropped_and_rupees_become_paise():
     result = checked(draft(issues=[issue("offers_coupons", coupon_code="my coupon!", amount=49.5)]), "x")
     assert result.issues[0].coupon_code is None and result.issues[0].claimed_amount_paise == 4950
     assert checked(draft(issues=[issue("refund", amount=-5)]), "x").issues[0].claimed_amount_paise is None
+
+
+def test_money_back_for_a_problem_is_part_of_it_not_a_second_issue():
+    """seen 2026-11-13: "the tomatoes did not come in my order ORD-100115. please give my money back" became two
+    issues, so the several-issues rule sent a plain refund ask to a person."""
+    text = "The Green Valley Tomatoes did not come in my order ORD-100115. Please give my money back."
+    split = draft(issues=[issue("item_missing_or_wrong", order_id="ORD-100115", items=["tomatoes"]),
+                          issue("refund", order_id="ORD-100115", amount=40, money_to="card_or_bank")])
+    (one,) = checked(split, text).issues
+    assert (one.case_type, one.order_id, one.items_mentioned, one.claimed_amount_paise, one.money_to) == (
+        "item_missing_or_wrong", "ORD-100115", ["tomatoes"], 4000, "card_or_bank")
+    # the refund names no order: it goes with the only money problem
+    no_order = draft(issues=[issue("quality", order_id="ORD-100115", items=["eggs"]), issue("refund")])
+    assert [i.case_type for i in checked(no_order, "Broken eggs in ORD-100115. Refund please").issues] == ["quality"]
+
+
+@pytest.mark.parametrize("issues, kept", [
+    # another order: a problem of its own
+    ([issue("item_missing_or_wrong", order_id="ORD-100115"), issue("refund", order_id="ORD-100116")],
+     ["item_missing_or_wrong", "refund"]),
+    # a refund beside a problem that pays nothing (where is my order) stays
+    ([issue("where_is_my_order", order_id="ORD-100115"), issue("refund", order_id="ORD-100115")],
+     ["where_is_my_order", "refund"]),
+    # no order named, and two money problems: no telling which it goes with
+    ([issue("quality", order_id="ORD-100115"), issue("item_missing_or_wrong", order_id="ORD-100116"),
+      issue("refund")], ["quality", "item_missing_or_wrong", "refund"]),
+    # the refund is the only problem
+    ([issue("refund", order_id="ORD-100115")], ["refund"]),
+])
+def test_a_refund_that_is_not_about_a_listed_money_problem_stays_an_issue(issues, kept):
+    result = checked(draft(issues=issues), "ORD-100115 ORD-100116")
+    assert [i.case_type for i in result.issues] == kept
+
+
+@pytest.mark.parametrize("said, text, money_to", [
+    ("wallet", "please add it to my wallet", "wallet"),
+    ("wallet", "Put it as HiveMart credit", "wallet"),
+    ("wallet", "please refund it", None),  # the model read a wallet the customer never named
+    ("card_or_bank", "back to my card please", "card_or_bank"),
+    ("not_said", "give my money back", None),
+])
+def test_the_wallet_only_when_the_customers_words_name_it(said, text, money_to):
+    result = checked(draft(issues=[issue("item_missing_or_wrong", money_to=said)]), text)
+    assert result.issues[0].money_to == money_to
+
+
+def test_a_wallet_named_in_an_earlier_turn_counts():
+    earlier = [Turn(role="customer", text="the bread was missing, wallet is fine")]
+    result = checked(draft(issues=[issue("item_missing_or_wrong", money_to="wallet")]), "ORD-100123", earlier)
+    assert result.issues[0].money_to == "wallet"
+
+
+def test_the_way_to_pay_waits_with_a_question():
+    pending = {"asks": "order", "case_type": "item_missing_or_wrong", "queue": [], "question": "which order?",
+               "items_mentioned": ["bread"], "claimed_amount_paise": None, "money_to": "wallet"}
+    answer = intake.intake("ORD-100123", None, pending, [], [], None)
+    assert answer.issues[0].money_to == "wallet" and answer.issues[0].order_id == "ORD-100123"
 
 
 def test_issues_only_count_inside_the_case_list():

@@ -29,7 +29,8 @@ TRANSITIONS: dict[str, set[str]] = {
     "AWAITING_HUMAN": set(_A_PERSON_ANSWERED),
     "ESCALATED": set(_A_PERSON_ANSWERED),
     "PENDING_SYSTEM": {"INVESTIGATING", "DECIDING", "ACTIONING", "ESCALATED"},
-    "ACTIONING": {"RESOLVED", "PENDING_SYSTEM", "ESCALATED"},
+    # the gateway refused the action on its own re-check: a person decides
+    "ACTIONING": {"RESOLVED", "PENDING_SYSTEM", "AWAITING_HUMAN", "ESCALATED"},
     "RESOLVED": {"CLOSED", "REOPENED"},
     "CLOSED": set(),
     # blueprint 4.5: a second dispute always goes to a person

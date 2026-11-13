@@ -48,7 +48,7 @@ def test_error_bodies_are_problem_json():
 
 ALL_SCOPES = ["profile:read:self", "orders:read:self", "delivery:read:self", "payments:read:self",
               "inventory:read", "promotions:read:self", "cases:write:self", "policy:read", "history:read:self",
-              "risk:read"]
+              "risk:read", "eligibility:read", "actions:write:self"]
 
 
 def case_token(customer_id: str, scopes=ALL_SCOPES, minutes: float = 10, age_minutes: float = 0,
@@ -74,12 +74,12 @@ def schema_for(path: str, status: int, content_type: str, method: str = "get") -
     return Draft202012Validator({**schema, "components": SPEC["components"]})
 
 
-def check_body(path: str, response, method: str = "get") -> dict:
-    """status 200, body valid against the contract, evidence id right (on reads), money integers, times utc."""
-    assert response.status_code == 200, response.text
+def check_body(path: str, response, method: str = "get", status: int = 200) -> dict:
+    """the status, body valid against the contract, evidence id right (on reads), money integers, times utc."""
+    assert response.status_code == status, response.text
     assert response.headers["content-type"] == "application/json"
     body = response.json()
-    errors = list(schema_for(path, 200, "application/json", method).iter_errors(body))
+    errors = list(schema_for(path, status, "application/json", method).iter_errors(body))
     assert not errors, errors[0].message
     if "evidence_id" in body:
         rest = {k: v for k, v in body.items() if k != "evidence_id"}
@@ -142,6 +142,38 @@ def rejected(t) -> dict:
     return next(r for r in t["promotions.redemptions"] if r["status"] == "rejected")
 
 
+def store_miss(t) -> tuple[str, str, int]:
+    """(order id, its missing line as a part, the line's value)."""
+    f = fault(t, "missing_item", "store_miss")
+    line_no = f["facts"]["missing"][0]["line_no"]
+    line = next(x for x in t["orders.order_lines"] if x["order_id"] == f["order_id"] and x["line_no"] == line_no)
+    return f["order_id"], f"line:{line_no}", line["qty"] * line["unit_paise"]
+
+
+def extra_capture(t) -> tuple[str, int]:
+    capture = next(c for c in t["payments.captures"] if c["capture_id"] == fault(t, "duplicate_capture")["facts"]
+                   ["capture_id"])
+    return f"capture:{capture['capture_id']}", capture["amount_paise"]
+
+
+def not_packed(t) -> dict:
+    return next(o for o in t["orders.orders"] if o["status"] in ("PLACED", "CONFIRMED"))
+
+
+def action(t, issue_type: str, order_id: str, make):
+    """an operation on a case support is deciding: `make(case_id)` gives (url, body, extra headers)."""
+    return ("action", owner(t, order_id), (issue_type, order_id, make))
+
+
+def deciding_case(client, headers, issue_type: str, order_id: str) -> str:
+    opened = client.post("/v1/cases", headers=headers, json={"issue_type": issue_type, "order_id": order_id})
+    assert opened.status_code == 200, opened.text
+    case_id = opened.json()["case_id"]
+    for state in ("INVESTIGATING", "DECIDING"):
+        client.post(f"/v1/cases/{case_id}/state", headers=headers, json={"state": state})
+    return case_id
+
+
 CASES = {
     ("GET", "/v1/clock"): lambda t: ("/v1/clock", any_customer(t), None),
     ("GET", "/v1/identity/sign-in-options"): lambda t: ("/v1/identity/sign-in-options", None, None),
@@ -174,7 +206,28 @@ CASES = {
     ("POST", "/v1/cases"): lambda t: ("/v1/cases", any_customer(t), {
         "issue_type": "where_is_my_order", "order_id": t["orders.orders"][0]["order_id"]}),
     ("POST", "/v1/cases/{case_id}/state"): lambda t: (None, any_customer(t), {"state": "INVESTIGATING"}),
+    # a case support is deciding on is made first (see `call`); the body names its case
+    ("POST", "/v1/cases/{case_id}/eligibility"): lambda t: action(
+        t, "item_missing_or_wrong", store_miss(t)[0], lambda case: (f"/v1/cases/{case}/eligibility", {
+            "claims": [{"part": store_miss(t)[1], "status": "corroborated"}], "risk_band": "low"}, {})),
+    ("POST", "/v1/actions/refunds"): lambda t: action(
+        t, "payment_failed", fault(t, "duplicate_capture")["order_id"], lambda case: ("/v1/actions/refunds", {
+            "case_id": case, "parts": [{"part": extra_capture(t)[0], "amount_paise": extra_capture(t)[1]}],
+            "eligibility": {"claims": [{"part": extra_capture(t)[0], "status": "corroborated"}]}},
+            {"Idempotency-Key": f"{case}:remedy:1"})),
+    ("POST", "/v1/actions/wallet-credits"): lambda t: action(
+        t, "item_missing_or_wrong", store_miss(t)[0], lambda case: ("/v1/actions/wallet-credits", {
+            "case_id": case, "parts": [{"part": store_miss(t)[1], "amount_paise": store_miss(t)[2]}],
+            "eligibility": {"claims": [{"part": store_miss(t)[1], "status": "corroborated"}], "risk_band": "low"}},
+            {"Idempotency-Key": f"{case}:remedy:1"})),
+    ("POST", "/v1/actions/cancellations"): lambda t: action(
+        t, "cancellation", not_packed(t)["order_id"], lambda case: (
+            "/v1/actions/cancellations", {"case_id": case}, {"Idempotency-Key": f"{case}:cancel"})),
+    ("POST", "/v1/actions/outcomes"): lambda t: action(
+        t, "item_missing_or_wrong", fault(t, "missing_item", "false_claim")["order_id"], lambda case: (
+            "/v1/actions/outcomes", {"case_id": case, "outcome": "to_a_person"}, {"Idempotency-Key": f"{case}:outcome:1"})),
 }
+CREATED = {op for op in CASES if op[1].startswith("/v1/actions/")}
 PARAMS = {
     "/v1/stores/{store_id}/incidents": lambda t: window(t, t["store_inventory.incidents"][0]["at"]),
     "/v1/stores/{store_id}/stock-events": lambda t: {"sku": t["store_inventory.stock_events"][0]["sku"],
@@ -200,15 +253,19 @@ def call(client, operation, tables):
     if url is None:  # a case has to be opened before it can be moved
         opened = client.post("/v1/cases", headers=headers, json={"issue_type": "refund"}).json()
         url = f"/v1/cases/{opened['case_id']}/state"
+    if url == "action":
+        issue_type, order_id, make = body
+        url, body, extra = make(deciding_case(client, headers, issue_type, order_id))
+        headers = {**headers, **extra}
     params = PARAMS.get(path, lambda t: {})(tables)
     return client.request(method, url, params=params, json=body, headers=headers)
 
 
 @pytest.mark.db
 @pytest.mark.parametrize("operation", sorted(CASES), ids=lambda op: f"{op[0]} {op[1]}")
-def test_operation_matches_contract(operation, client, test_db):
+def test_operation_matches_contract(operation, client, test_db, clean_actions):
     method, path = operation
-    body = check_body(path, call(client, operation, test_db), method.lower())
+    body = check_body(path, call(client, operation, test_db), method.lower(), 201 if operation in CREATED else 200)
     if "evidence_id" in body:
         assert call(client, operation, test_db).json()["evidence_id"] == body["evidence_id"]
 

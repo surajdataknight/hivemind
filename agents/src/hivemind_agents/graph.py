@@ -7,7 +7,12 @@
                                |                    -> plan -> schedule <-> investigate   (T2 types: case lead, c5-c7)
                                |                         -> finish_plan -> reconcile -> replan -> schedule  (c17's
                                |                                                        follow-ups, one round)
-                               |                                                     -> waiting_for_person
+                               |                                                     -> decide
+                               |                    -> decide   (cancellation: the short path, no check, no model)
+                               |                         decide (c18 rules, c21 router, c19 when acting alone)
+                               |                           -> act (c22: refund, wallet credit or cancel, under a key)
+                               |                           -> to_person (a person decides; the decision is kept)
+                               |                           -> explain (nothing owed, or already refunded)
                                |                    -> waiting_for_person  (a case type with no path yet, or a plan
                                |                                           whose minimum checks cannot run)
                                |     then close_case moves the case to where its part of the reply left it
@@ -33,15 +38,15 @@ from langgraph.runtime import Runtime
 from langgraph.types import Send
 
 from hivemind_agents import board, replies
-from hivemind_agents.backend_client import BackendClient
-from hivemind_agents.capabilities import (case_manager, communicator, input_guard, intake, order_status,
-                                          planner, policy_provider, progress_reporter, promotions_investigator,
-                                          reconciler, triage)
+from hivemind_agents.backend_client import ActionRefused, BackendClient
+from hivemind_agents.capabilities import (action_gateway, approval_router, case_manager, communicator, eligibility,
+                                          input_guard, intake, order_status, planner, policy_provider,
+                                          progress_reporter, promotions_investigator, reconciler, resolver, triage)
 from hivemind_agents.capabilities import registry as check_registry
 from hivemind_agents.capabilities.registry import Capability, CheckInput
 from hivemind_agents import scheduler
 from hivemind_agents.case_store import CaseStore, LeaseLost
-from hivemind_agents.contracts import Chip, Finding, Issue, Plan, Reply, RunState, TaskOutcome
+from hivemind_agents.contracts import Chip, Decision, Finding, Issue, Plan, Reply, RunState, TaskOutcome
 from hivemind_agents.llm import ModelRouter
 from hivemind_agents.reply_stream import ReplyStream
 from hivemind_agents.tracing import Tracer, set_output
@@ -178,7 +183,8 @@ def _fixed_reply(state: RunState) -> Reply:
 
 def _claim_words(issue: Issue) -> dict:
     """what the customer said about the problem itself, kept with a question so the answer does not lose it."""
-    return {"items_mentioned": issue.items_mentioned, "claimed_amount_paise": issue.claimed_amount_paise}
+    return {"items_mentioned": issue.items_mentioned, "claimed_amount_paise": issue.claimed_amount_paise,
+            "money_to": issue.money_to}
 
 
 def _question(result: triage.Triage, issue: Issue, backend: BackendClient) -> Reply:
@@ -209,7 +215,8 @@ def triage_node(state: RunState, runtime: Run) -> dict:
     same problem twice in one message is worked once."""
     ctx = runtime.context
     issue, rest = state["todo"][0], state["todo"][1:]
-    update: dict = {"todo": rest, "issue": None, "case": None, "finding": None, "policy": None, "piece": None}
+    update: dict = {"todo": rest, "issue": None, "case": None, "finding": None, "policy": None, "piece": None,
+                    "fact_sheet": None, "decision": None}
     with ctx.tracer.capability("triage") as span:
         result = triage.triage(issue, state["recent_orders"], ctx.backend)
         issue = result.issue
@@ -268,6 +275,8 @@ def after_case_manager(state: RunState) -> str:
         return "promotions_investigator"
     if case_type in planner.MINIMUM:
         return "plan"
+    if case_type == "cancellation":  # the short path: the order's state decides, no check and no model
+        return "decide"
     return "waiting_for_person"
 
 
@@ -511,7 +520,7 @@ def after_finish(state: RunState) -> str:
     plan = state["plan"]
     if state.get("follow_ups") and plan.replans < planner.replans_allowed(len(state["intake"].issues)):
         return "replan"
-    return "waiting_for_person"
+    return "decide"
 
 
 def replan_node(state: RunState, runtime: Run) -> dict:
@@ -530,9 +539,158 @@ def replan_node(state: RunState, runtime: Run) -> dict:
     return {"plan": revised, "follow_ups": None}
 
 
+# deciding and acting: the rules (c18), the router (c21), the resolution planner (c19), the gateway (c22)
+
+
+def decide_node(state: RunState, runtime: Run) -> dict:
+    """what the business's rules allow on the case, from the fact sheet (none for a cancellation), and how the case
+    goes. the resolution planner proposes the way to pay only when support may act alone."""
+    ctx, case, issue = runtime.context, state["case"], state["issue"]
+    sheet = state.get("fact_sheet")
+    board_now = list(state.get("boards", {}).get(case.case_id, []))
+    several = len(state["intake"].issues) > 1
+    runtime.stream_writer(progress_reporter.event("decision", "started"))
+    with ctx.tracer.capability("policy_eligibility_engine") as span:
+        if case.state != "DECIDING":
+            case = case_manager.move(case, "DECIDING", ctx.backend, "checks_done" if sheet else "short_path")
+        inputs = eligibility.inputs_for(issue, sheet, board_now)
+        answer = eligibility.evaluate(case.case_id, inputs, ctx.backend)
+        span.set_attribute("hivemind.rules_version", answer["rules_version"])
+        set_output(span, answer)
+    with ctx.tracer.capability("approval_router") as span:
+        route, why = approval_router.route(answer, sheet, several, issue.money_to)
+        span.set_attribute("hivemind.route", route)
+        set_output(span, why)
+    proposal = None
+    if route == "auto":
+        with ctx.tracer.capability("resolution_planner") as span:
+            proposal = resolver.propose(answer, issue.money_to)
+            span.set_attribute("hivemind.proposal.source", proposal.source)
+            set_output(span, proposal.model_dump(mode="json"))
+    runtime.stream_writer(progress_reporter.event("decision", "finished"))
+    decision = Decision(route=route, why=why, inputs=inputs, eligibility=answer, proposal=proposal)
+    return {"case": case, "decision": decision}
+
+
+def after_decide(state: RunState) -> str:
+    route = state["decision"].route
+    return {"auto": "act", "person": "to_person"}.get(route, "explain")
+
+
+def _decision_meta(state: RunState) -> dict:
+    d = state["decision"]
+    meta: dict = {"decision": {"route": d.route, "why": d.why, "rules_version": d.eligibility.get("rules_version"),
+                               "parts": [{k: p.get(k) for k in ("part", "outcome", "max_amount_paise", "basis",
+                                                                 "requires", "rule", "why")}
+                                         for p in d.eligibility.get("parts", [])]}}
+    if d.proposal is not None:
+        meta["decision"]["proposal"] = d.proposal.model_dump(mode="json")
+    sheet = state.get("fact_sheet")
+    if sheet is not None:
+        meta["fact_sheet"] = {"round": sheet.round, "verdict": sheet.verdict, "source": sheet.source}
+    return meta
+
+
+def _record(state: RunState) -> dict:
+    return action_gateway.record(state["case"], state["issue"], state.get("fact_sheet"), state["decision"])
+
+
+def _keep_outcome(state: RunState, runtime: Run, outcome: str, body: dict) -> dict:
+    """the decision record of a case decided without moving money. when the business refuses it or does not answer,
+    the reply still goes out and the decision stays with it in the chat's own record (what to add to its meta)."""
+    ctx, case = runtime.context, state["case"]
+    try:
+        kept = action_gateway.keep_outcome(case.case_id, outcome, body, ctx.backend, ctx.rng, ctx.retry_sleep)
+        return {"decision_record_id": kept["decision_record_id"]}
+    except ActionRefused as exc:
+        return {"record_refused": exc.detail}
+    except action_gateway.StillPending as exc:
+        return {"record_pending": str(exc)[:200]}
+
+
+def _with_a_person(state: RunState, runtime: Run, extra: dict | None = None) -> dict:
+    """the decision is kept, and the case waits for a person: neutral words, never why."""
+    case = state["case"]
+    kept = _keep_outcome(state, runtime, "to_a_person", {**_record(state), **(extra or {})})
+    meta = {**_decision_meta(state), **kept}
+    if extra:
+        meta.update(extra)
+    parts = state["decision"].eligibility.get("parts", [])
+    if case.case_type == "cancellation" and any(p["rule"] == "cancel.packing_started" for p in parts):
+        text = replies.cannot_cancel(case.order_id)
+    else:
+        text = replies.with_a_person(case.case_type)
+    return {"piece": Reply(kind="waiting_for_person", text=text, case_state="AWAITING_HUMAN", meta=meta)}
+
+
+def to_person_node(state: RunState, runtime: Run) -> dict:
+    with runtime.context.tracer.capability("approval_router") as span:
+        span.set_attribute("hivemind.reply.kind", "waiting_for_person")
+        return _with_a_person(state, runtime)
+
+
+def explain_node(state: RunState, runtime: Run) -> dict:
+    """nothing is owed, or it was already refunded: the decision is kept and the reply says so, from a template."""
+    ctx, case, decision = runtime.context, state["case"], state["decision"]
+    parts = decision.eligibility.get("parts", [])
+    outcome = "already_refunded" if decision.route == "already_refunded" else "nothing_owed"
+    with ctx.tracer.capability("customer_communicator") as span:
+        kept = _keep_outcome(state, runtime, outcome, _record(state))
+        if outcome == "already_refunded":
+            text = replies.already_refunded(case.order_id, sum(p["max_amount_paise"] for p in parts))
+        elif case.case_type == "cancellation":
+            text = replies.nothing_to_cancel(case.order_id, parts[0]["why"] if parts else "")
+        else:
+            text = replies.nothing_owed_payment(case.order_id)
+        span.set_attribute("hivemind.reply.kind", outcome)
+        return {"piece": Reply(kind=outcome, text=text, case_state="RESOLVED", meta={**_decision_meta(state), **kept})}
+
+
+def act_node(state: RunState, runtime: Run) -> dict:
+    """the action, under its key; then the reply says what was done. the business's own re-check can refuse it (a
+    person decides), and a business that does not answer leaves the case waiting on the system."""
+    ctx, case, decision = runtime.context, state["case"], state["decision"]
+    runtime.stream_writer(progress_reporter.event("action", "started"))
+    with ctx.tracer.capability("action_gateway") as span:
+        case = case_manager.move(case, "ACTIONING", ctx.backend, "acting")
+        state = {**state, "case": case}
+        try:
+            made = action_gateway.act(case.case_id, decision, _record(state), ctx.backend, ctx.retry_sleep)
+        except ActionRefused as exc:
+            span.set_attribute("hivemind.action.refused", exc.detail[:200])
+            return {"case": case, **_with_a_person(state, runtime, {"refused": exc.detail})}
+        except action_gateway.StillPending as exc:
+            span.set_attribute("hivemind.action.pending", str(exc)[:200])
+            return {"case": case, "piece": Reply(kind="pending_system", text=replies.PENDING_SYSTEM,
+                                                 case_state="PENDING_SYSTEM", meta=_decision_meta(state))}
+        span.set_attribute("hivemind.action.replayed", made["replayed"])
+        set_output(span, made)
+    runtime.stream_writer(progress_reporter.event("action", "finished"))
+    meta = {**_decision_meta(state), "action": made, "decision_record_id": made["decision_record_id"]}
+    if decision.proposal.kind == "cancel":
+        return {"case": case, "piece": Reply(kind="cancelled", text=replies.cancelled(case.order_id, made["refund"]),
+                                             case_state="RESOLVED", meta=meta)}
+    parts = [p.model_dump() for p in decision.proposal.parts]
+    with ctx.tracer.capability("customer_communicator", uses_llm=True) as span:
+        text, how = communicator.compose_refund(state["guard"].sanitised_text, made, parts,
+                                                decision.proposal.explanation_points, ctx.llm,
+                                                ctx.out.writer(runtime.stream_writer))
+        span.set_attribute("hivemind.reply.source", how["source"])
+        set_output(span, text)
+    kind = "wallet_credited" if made["destination"] == "wallet" else "refunded"
+    return {"case": case, "piece": Reply(kind=kind, text=text, case_state="RESOLVED",
+                                         meta={**meta, "communicator": how})}
+
+
 def _reason(piece: Reply) -> str:
-    if piece.kind == "waiting_for_person":  # the checks ran: the reconciler's verdict; phase 3 decides from it
+    if piece.kind == "waiting_for_person":
+        if "decision" in piece.meta:  # the rules or the router sent it to a person
+            return "refused_at_action" if "refused" in piece.meta else "decided_a_person"
         return "fact_sheet_" + piece.meta["fact_sheet"]["verdict"] if "fact_sheet" in piece.meta else "no_path_yet"
+    if piece.kind in ("refunded", "wallet_credited", "cancelled"):
+        return piece.kind
+    if piece.kind in ("nothing_owed", "already_refunded", "pending_system"):
+        return piece.kind
     return "money_owed" if piece.case_state == "AWAITING_HUMAN" else "answered"
 
 
@@ -598,6 +756,10 @@ def build_graph():
     graph.add_node("finish_plan", finish_plan_node)
     graph.add_node("reconcile", reconcile_node)
     graph.add_node("replan", replan_node)
+    graph.add_node("decide", decide_node)
+    graph.add_node("act", act_node)
+    graph.add_node("to_person", to_person_node)
+    graph.add_node("explain", explain_node)
     graph.add_node("close_case", close_case_node)
     graph.add_node("reply", reply_node)
 
@@ -608,14 +770,18 @@ def build_graph():
     graph.add_edge("ask_again", END)
     graph.add_conditional_edges("triage", after_triage, ["case_manager", "triage", "reply"])
     graph.add_conditional_edges("case_manager", after_case_manager,
-                                ["close_case", "order_status", "promotions_investigator", "plan",
+                                ["close_case", "order_status", "promotions_investigator", "plan", "decide",
                                  "waiting_for_person"])
     graph.add_conditional_edges("plan", after_plan, ["schedule", "waiting_for_person"])
     graph.add_conditional_edges("schedule", fan_out, ["investigate", "finish_plan"])
     graph.add_edge("investigate", "schedule")
     graph.add_edge("finish_plan", "reconcile")
-    graph.add_conditional_edges("reconcile", after_finish, ["replan", "waiting_for_person"])
+    graph.add_conditional_edges("reconcile", after_finish, ["replan", "decide"])
     graph.add_edge("replan", "schedule")
+    graph.add_conditional_edges("decide", after_decide, ["act", "to_person", "explain"])
+    graph.add_edge("act", "close_case")
+    graph.add_edge("to_person", "close_case")
+    graph.add_edge("explain", "close_case")
     graph.add_edge("order_status", "close_case")
     graph.add_edge("promotions_investigator", "policy_provider")
     graph.add_edge("policy_provider", "communicator")

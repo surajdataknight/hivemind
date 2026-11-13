@@ -41,6 +41,8 @@ _TIME = re.compile(r"(?i)\b(\d{1,2})[:.](\d{2})\s?(am|pm)?")
 _RELATIVE = re.compile(r"(?i)\b(today|tonight|tomorrow|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|"
                        r"sunday|next week|this week)\b")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+# words the customer never sees about how a case was weighed (blueprint s08: no fraud language)
+RISK_WORDS = re.compile(r"(?i)\b(risk\w*|fraud\w*|suspicio\w*|scor(e|es|ed|ing)|flagged|abus\w*|blacklist\w*)\b")
 
 
 def _paise(number: str) -> int:
@@ -86,6 +88,8 @@ def check_reply(reply: str, facts: str) -> list[str]:
     stated = {w.lower() for w in _RELATIVE.findall(reply)} - {w.lower() for w in _RELATIVE.findall(facts)}
     for word in sorted(stated):
         problems.append(f"'{word}' is a date the facts do not give")
+    for word in sorted({m.group(0).lower() for m in RISK_WORDS.finditer(reply)}):
+        problems.append(f"'{word}' says how the customer was assessed")
     return problems
 
 
@@ -98,8 +102,8 @@ def must_state(f: PromotionFinding) -> set[int]:
     return set()
 
 
-def missing_from(reply: str, finding: PromotionFinding) -> list[str]:
-    return [f"it does not give the amount {rupees(p)}" for p in sorted(must_state(finding) - _amounts(reply))]
+def missing_from(reply: str, must: set[int]) -> list[str]:
+    return [f"it does not give the amount {rupees(p)}" for p in sorted(must - _amounts(reply))]
 
 
 def finding_in_words(f: PromotionFinding) -> str:
@@ -177,8 +181,15 @@ def _sentences(pieces: Iterator[str]) -> Iterator[str]:
 
 def compose(customer_text: str, finding: PromotionFinding, policy: list[PolicySection], llm: ModelRouter,
             emit: Callable[[dict], None]) -> tuple[str, dict]:
-    """(the reply, how it was made). `emit` gets each checked sentence as it is ready."""
-    facts = facts_sheet(finding, policy)
+    """the reply about a coupon: (the reply, how it was made)."""
+    return write(customer_text, facts_sheet(finding, policy), must_state(finding), template_reply(finding, policy),
+                 llm, emit)
+
+
+def write(customer_text: str, facts: str, must: set[int], template: str, llm: ModelRouter,
+          emit: Callable[[dict], None]) -> tuple[str, dict]:
+    """(the reply, how it was made). `emit` gets each checked sentence as it is ready. a reply that states what the
+    facts do not hold, or leaves out an amount in `must`, gets one more try, then `template`."""
     prompt = f'Facts:\n{facts}\n\nThe customer wrote:\n"""\n{customer_text}\n"""\n\nWrite the reply.'
     record: dict = {"source": "llm", "tries": 0, "rejected": []}
     sent = ""
@@ -203,7 +214,7 @@ def compose(customer_text: str, finding: PromotionFinding, policy: list[PolicySe
             stream.close()
         said = said.strip()
         if not problems and said:
-            problems = missing_from(said, finding)
+            problems = missing_from(said, must)
         if not problems and said:
             if attempt == 2:
                 emit({"type": "replace", "text": said})
@@ -212,6 +223,44 @@ def compose(customer_text: str, finding: PromotionFinding, policy: list[PolicySe
         ask = (f"{prompt}\n\nYour last reply was thrown away because: {'; '.join(problems) or 'it was empty'}. "
                "Write it again using only what the facts hold.")
     record["source"] = "template"
-    text = template_reply(finding, policy)
-    emit({"type": "replace" if sent else "token", "text": text})
-    return text, record
+    emit({"type": "replace" if sent else "token", "text": template})
+    return template, record
+
+
+# the reply once support has put something right alone (c22 done): what was paid, how, and when it arrives
+
+DESTINATION_WORDS = {"source": "your original payment method", "wallet": "your HiveMart wallet"}
+
+
+def _items(parts: list[dict]) -> str:
+    named = [p["name"] for p in parts if p.get("name")]
+    if not named:
+        return ""
+    return named[0] if len(named) == 1 else ", ".join(named[:-1]) + " and " + named[-1]
+
+
+def refund_in_words(made: dict, parts: list[dict]) -> str:
+    """what was done, in one or two sentences; every amount and time the reply may use is here."""
+    items = _items(parts)
+    what = f" for {items}" if items else ""
+    if made["destination"] == "wallet":
+        return (f"{rupees(made['amount_paise'])}{what} has been added to your HiveMart wallet, and you can use it "
+                "right away.")
+    return (f"A refund of {rupees(made['amount_paise'])}{what} has been made to your original payment method; it "
+            f"should reach you in {made['expected_settlement']}.")
+
+
+def refund_facts(made: dict, parts: list[dict], points: list[str]) -> str:
+    lines = [f"what the check found: {refund_in_words(made, parts)}"]
+    if made.get("order_id"):  # the reply may name the order (seen 2026-11-13: rejected for naming it)
+        lines.append(f"the order: {made['order_id']}")
+    lines += [f"why: {point}" for point in points]
+    lines.append("next step: say what was done, with the amount and when it arrives, exactly as written. You may "
+                 "say why in a few words, from the 'why' lines only. Promise nothing else.")
+    return "\n".join(lines)
+
+
+def compose_refund(customer_text: str, made: dict, parts: list[dict], points: list[str], llm: ModelRouter,
+                   emit: Callable[[dict], None]) -> tuple[str, dict]:
+    return write(customer_text, refund_facts(made, parts, points), {made["amount_paise"]},
+                 refund_in_words(made, parts), llm, emit)

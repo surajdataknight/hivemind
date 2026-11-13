@@ -217,7 +217,7 @@ def test_with_no_groq_key_the_case_lead_gives_no_plan_and_says_why(monkeypatch):
 
 
 def test_the_case_lead_is_groqs_gpt_oss_120b_and_its_fallback_googles_flash_lite():
-    for name in ("case_lead", "reconciler_complex"):
+    for name in ("case_lead", "reconciler_complex", "resolution_planner_complex"):
         job = settings.load_models().job(name)
         assert (job.provider, job.model, job.fallback_provider, job.fallback) == (
             "groq", "openai/gpt-oss-120b", "google", "gemini-3.5-flash-lite")

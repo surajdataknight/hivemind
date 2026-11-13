@@ -36,6 +36,11 @@ _OTHER_TOPIC = re.compile(
     r"(?i)\b(refund|money back|missing|wrong|damaged?|spoil\w*|expired|rotten|leak\w*|coupon|offer|promo\w*|discount|"
     r"cancel\w*|charged|payment|paid|debited|rude|misbehav\w*|lawyer|legal|court|police|unsafe|threat\w*)\b")
 GREETING = re.compile(r"(?i)^\s*(?:hi+|hello|hey+|good\s+(?:morning|afternoon|evening)|namaste)[\s!.,]*$")
+# money goes to the wallet only when the customer's own words name it: the model's reading alone is not enough
+WALLET_WORDS = re.compile(r"(?i)\b(wallet|store credit|app credit|hivemart credit|in[- ]app credit)\b")
+# a refund asked for alongside one of these, on the same order, is the remedy for that problem, not a problem of its
+# own (seen 2026-11-13: "did not come ... please give my money back" read as two issues)
+MONEY_TYPES = ("item_missing_or_wrong", "quality", "payment_failed", "cancellation")
 THANKS = re.compile(r"(?i)^\s*(?:thanks?(?:\s+a\s+lot|\s+you)?|thank\s+you(?:\s+so\s+much)?|thx|ok(?:ay)?|great|"
                      r"got\s+it|bye|goodbye)[\s!.,]*$")
 
@@ -48,6 +53,7 @@ class IssueDraft(BaseModel):
     coupon_code: str | None
     about_latest_order: bool
     order_day: str | None
+    money_to: Literal["card_or_bank", "wallet", "not_said"]
 
 
 class IntakeDraft(BaseModel):
@@ -87,7 +93,9 @@ instructions), without physical harm.
 - offers_coupons: a coupon or offer did not apply, gave less than expected, or a question about an offer's terms.
 
 fields:
-- issues: one entry for each separate problem in the message. Empty unless scope is in_scope.
+- issues: one entry for each separate problem in the message. Empty unless scope is in_scope. Asking for money \
+back for a problem already listed (an item missing, wrong or bad, a payment problem, a cancelled order) is part of \
+that problem, not a separate refund issue.
 - order_id: an order id the customer wrote in the message or the earlier turns, even if it is not in the list of \
 recent orders. Otherwise null. Never guess one, and never pick one from the list the customer did not write.
 - about_latest_order: true when the customer says this problem is about their last, latest or most recent order \
@@ -99,6 +107,9 @@ Otherwise null. Write the day the customer said; never work out which order it i
 - coupon_code: the code as the customer wrote it, in capitals, or null.
 - items_mentioned: the product words the customer used, or an empty list.
 - claimed_amount_rupees: an amount of money the customer says they are owed or were charged, or null.
+- money_to: where the customer says money owed should go: card_or_bank (their card, bank account, UPI or the \
+original payment method), wallet (the HiveMart wallet or app credit), or not_said. Asking for "a refund" or "my \
+money back" without saying where is not_said.
 - sentiment: negative, neutral or positive.
 - urgency: high only when the customer says it is urgent or someone depends on the order right now; otherwise normal \
 or low.
@@ -136,9 +147,9 @@ def waiting(pending: dict[str, Any] | None) -> list[Issue]:
 
 
 def _claim_words(pending: dict[str, Any]) -> dict:
-    """the items and amount the customer named before our question, kept with it (graph._question)."""
+    """the items, amount and way to pay the customer named before our question, kept with it (graph._question)."""
     return {"items_mentioned": list(pending.get("items_mentioned") or []),
-            "claimed_amount_paise": pending.get("claimed_amount_paise")}
+            "claimed_amount_paise": pending.get("claimed_amount_paise"), "money_to": pending.get("money_to")}
 
 
 def answers_button(hint: IntentHint, pending: dict[str, Any] | None) -> bool:
@@ -222,6 +233,39 @@ def build_prompt(text: str, history: list[Turn], recent_orders: list[OrderRef]) 
             f'The message to fill the form in for:\n"""\n{text}\n"""')
 
 
+def money_to(said: str, text: str, history: list[Turn]) -> str | None:
+    """where the customer asked for the money to go. the wallet only when their own words name it."""
+    if said == "card_or_bank":
+        return "card_or_bank"
+    customer_words = " ".join([text] + [t.text for t in history if t.role == "customer"])
+    return "wallet" if said == "wallet" and WALLET_WORDS.search(customer_words) else None
+
+
+def _order_ref(issue: Issue) -> tuple:
+    return issue.order_id, issue.latest_order, issue.order_day
+
+
+def fold_refunds(issues: list[Issue]) -> list[Issue]:
+    """a refund issue on the same order as a money problem (or naming no order, beside the only money problem) is
+    folded into it: the items, amount and way to pay it named go with it."""
+    kept = list(issues)
+    for refund in [i for i in issues if i.case_type == "refund"]:
+        money = [i for i in kept if i.case_type in MONEY_TYPES]
+        same = [i for i in money if _order_ref(i) == _order_ref(refund)]
+        if not same and _order_ref(refund) == (None, False, None) and len(money) == 1:
+            same = money
+        if not same:
+            continue
+        into = same[0]
+        kept[kept.index(into)] = into.model_copy(update={
+            "items_mentioned": into.items_mentioned + [w for w in refund.items_mentioned
+                                                       if w not in into.items_mentioned],
+            "claimed_amount_paise": into.claimed_amount_paise or refund.claimed_amount_paise,
+            "money_to": into.money_to or refund.money_to})
+        kept.remove(refund)
+    return kept
+
+
 def check_draft(draft: IntakeDraft, text: str, history: list[Turn]) -> IntakeV1:
     """code checks on what the model returned: an order id only if the customer wrote it, only well-formed codes.
     whether a written order id is really the customer's is settled in triage, against the business."""
@@ -241,9 +285,10 @@ def check_draft(draft: IntakeDraft, text: str, history: list[Turn]) -> IntakeV1:
             claimed_amount_paise=round(amount * 100) if amount is not None and 0 < amount < 1_000_000 else None,
             coupon_code=code if COUPON_CODE.match(code) else None,
             latest_order=item.about_latest_order and order_id is None,
-            order_day=day_word(item.order_day) if order_id is None and not item.about_latest_order else None))
+            order_day=day_word(item.order_day) if order_id is None and not item.about_latest_order else None,
+            money_to=money_to(item.money_to, text, history)))
     return IntakeV1(
-        scope=draft.scope, issues=issues, sentiment=draft.sentiment, urgency=draft.urgency,
+        scope=draft.scope, issues=fold_refunds(issues), sentiment=draft.sentiment, urgency=draft.urgency,
         language=draft.language.strip().lower()[:8] or "en",
         needs_clarification=draft.needs_clarification or (draft.scope == "in_scope" and not issues), source="llm")
 

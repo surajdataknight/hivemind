@@ -227,13 +227,15 @@ def test_the_repair_try_stays_on_the_fallback():
     assert provider.models == [LEAD, FALLBACK, FALLBACK]
 
 
-def test_only_the_planning_jobs_have_a_fallback():
+def test_only_the_jobs_on_groq_have_a_fallback():
     jobs = settings.load_models().jobs
     assert {name: job.fallback for name, job in jobs.items()} == {"intake": None, "communicator": None,
                                                                   "quarantined_reader": None,
                                                                   "case_lead": "gemini-3.5-flash-lite",
                                                                   "reconciler": None,
                                                                   "reconciler_complex": "gemini-3.5-flash-lite",
+                                                                  "resolution_planner": None,
+                                                                  "resolution_planner_complex": "gemini-3.5-flash-lite",
                                                                   "simulated_customer": None, "baseline_agent": None}
 
 
@@ -253,6 +255,8 @@ def test_each_job_has_its_own_time_limit():
     assert {name: job.timeout_s for name, job in jobs.items()} == {"intake": 20, "communicator": 20,
                                                                    "quarantined_reader": 6, "case_lead": 45,
                                                                    "reconciler": 20, "reconciler_complex": 20,
+                                                                   "resolution_planner": 20,
+                                                                   "resolution_planner_complex": 20,
                                                                    "simulated_customer": 20, "baseline_agent": 20}
 
 
@@ -318,6 +322,8 @@ def test_only_the_case_lead_has_45_seconds_for_all_its_tries():
     assert {name: job.total_s for name, job in jobs.items()} == {"intake": None, "communicator": None,
                                                                  "quarantined_reader": 6, "case_lead": 45,
                                                                  "reconciler": 20, "reconciler_complex": 20,
+                                                                 "resolution_planner": 20,
+                                                                 "resolution_planner_complex": 20,
                                                                  "simulated_customer": None, "baseline_agent": None}
 
 

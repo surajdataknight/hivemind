@@ -38,6 +38,11 @@ HARD_PAIRS = 4  # customers with two faults, both of a kind hivemind investigate
 PERSONAS = ["calm and polite, writes full sentences",
             "upset and short, writes in lowercase with little punctuation",
             "chatty, writes in Hinglish (English with some Hindi words in Latin letters)"]
+# how the customer asks for the money on a missing-item claim: natural words, not only "please check" (seen
+# 2026-11-13: "please give my money back" was read as a second issue). the rest ask "please check"
+ASKS_FOR = {("missing_item", "store_miss"): "money_back", ("missing_item", "rider_handover"): "wallet"}
+ASK_WORDS = {"check": "Please check.", "money_back": "Please give my money back.",
+             "wallet": "Please put the money in my HiveMart wallet."}
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 
@@ -61,6 +66,7 @@ class Scenario:
     facts: dict = field(default_factory=dict)  # what really happened: for the grader only, never the customer
     names_items: bool = True         # false: the first message names no item; the items only when asked which
     also: "Scenario | None" = None   # a second problem of the same customer, written in the same first message
+    asks_for: str = "check"          # "check", "money_back" or "wallet": how the customer asks for the money
 
     def parts(self) -> list["Scenario"]:
         return [self] + ([self.also] if self.also else [])
@@ -155,7 +161,8 @@ def _scenario(conn: psycopg.Connection, fault: dict, scenario_id: str, persona: 
                     order_id=fault["order_id"], case_type=CASE_TYPE[fault["fault_type"]],
                     summary=fault["claim"]["summary"], items=items, code=fault["claim"].get("code"),
                     names_order_by=names_order_by, persona=persona, owed_paise=fault["expected"]["owed_paise"],
-                    proven_by_records=fault["expected"]["proven_by_records"], facts=fault["facts"])
+                    proven_by_records=fault["expected"]["proven_by_records"], facts=fault["facts"],
+                    asks_for=ASKS_FOR.get((fault["fault_type"], fault["variant"]), "check"))
 
 
 def short_name(name: str) -> str:
@@ -176,9 +183,10 @@ def _one_problem(s: Scenario) -> str:
     which = f"order {s.order_id}" if s.names_order_by == "id" else f"{s.names_order_by.replace('_', ' ')}'s order"
     items = " and ".join(short_name(i["name"]) for i in s.items)
     if s.case_type == "item_missing_or_wrong":
+        ask = ASK_WORDS[s.asks_for]
         if not s.names_items:
-            return f"Something did not come in my {which}. Please check."
-        return f"The {items} did not come in my {which}. Please check."
+            return f"Something did not come in my {which}. {ask}"
+        return f"The {items} did not come in my {which}. {ask}"
     if s.case_type == "offers_coupons":
         return f"My coupon {s.code or ''} did not work properly on {which}.".replace("  ", " ")
     if s.fault_type == "duplicate_capture":

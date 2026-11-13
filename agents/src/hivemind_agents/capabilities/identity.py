@@ -18,7 +18,8 @@ CASE_TOKEN_TTL = timedelta(minutes=10)
 
 # what this build's capabilities read and write; a capability can never use more than the token carries
 SCOPES = ["profile:read:self", "orders:read:self", "delivery:read:self", "payments:read:self", "inventory:read",
-          "promotions:read:self", "cases:write:self", "policy:read", "history:read:self", "risk:read"]
+          "promotions:read:self", "cases:write:self", "policy:read", "history:read:self", "risk:read",
+          "eligibility:read", "actions:write:self"]
 
 
 class NotSignedIn(Exception):

@@ -44,6 +44,8 @@ class Issue(BaseModel):
     order_day: str | None = Field(default=None, description="the day the customer named the order by, with no order "
                                                             "id: today, yesterday, day_before_yesterday, a weekday, "
                                                             "or a date (YYYY-MM-DD); triage picks the order")
+    money_to: Literal["card_or_bank", "wallet"] | None = Field(
+        default=None, description="where the customer asked for money owed to go; None: they did not say")
 
 
 class IntakeV1(BaseModel):
@@ -307,6 +309,43 @@ class Reply(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
+# deciding and acting (c18, c19, c21, c22)
+
+RefundType = Literal["refund_to_source", "wallet_credit"]
+
+
+class ProposedPart(BaseModel):
+    part: str
+    name: str | None = None
+    amount_paise: int = Field(gt=0)
+    basis: str
+
+
+class Proposal(BaseModel):
+    """c19: how the remedies the rules allow are paid, and what to tell the customer. the amounts are the rules'."""
+
+    kind: Literal["refund", "cancel"]
+    destination: RefundType
+    parts: list[ProposedPart] = []
+    total_paise: int = 0
+    rationale_summary: str = ""
+    explanation_points: list[str] = []
+    source: Literal["asked", "default", "no_choice"] = Field(
+        description="asked: the way the customer asked for; default: they did not say, so back where the money came "
+                    "from; no_choice: one way allowed")
+    note: str = ""
+
+
+class Decision(BaseModel):
+    """what the rules allow (c18), how the case goes (c21) and, when support acts alone, the proposal (c19)."""
+
+    route: Literal["auto", "person", "nothing_owed", "already_refunded"]
+    why: list[str] = []
+    inputs: dict[str, Any] = Field(default_factory=dict, description="what was sent to the rules")
+    eligibility: dict[str, Any] = Field(default_factory=dict, description="the rules' answer, as read")
+    proposal: Proposal | None = None
+
+
 def add_to_boards(left: dict[str, list[Finding]] | None,
                   right: dict[str, list[Finding]] | None) -> dict[str, list[Finding]]:
     """the case board's reducer: findings are only ever added, one list per case, each finding once
@@ -356,6 +395,7 @@ class RunState(TypedDict, total=False):
     plan_usage: tuple[int, int] | None  # model calls and tokens used before the plan: its model budget starts there
     follow_ups: list[str] | None      # what the evidence reconciler still needs once the checks are done (c5 revises)
     fact_sheet: FactSheet | None      # the reconciler's latest sheet for the case being worked (c17)
+    decision: Decision | None         # what the rules allow and how the case goes (c18, c19, c21)
     # what the run adds up
     pieces: Annotated[list[Reply], add_pieces]
     boards: Annotated[dict[str, list[Finding]], add_to_boards]

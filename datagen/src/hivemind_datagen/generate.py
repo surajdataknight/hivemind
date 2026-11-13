@@ -40,6 +40,7 @@ TABLES = [
     "payments.captures",
     "payments.gateway_events",
     "refunds_wallet.refunds",
+    "refunds_wallet.refund_parts",
     "delivery.riders",
     "delivery.trips",
     "delivery.gps_points",
@@ -87,6 +88,7 @@ class Config:
     orders_per_day: int = 150
     faults_per_type: int = 10
     live_orders: int = 8  # extra orders placed in the last 18 minutes, so some are always on their way at as_of
+    not_packed_orders: int = 2  # orders placed under a minute before as_of: not packed yet, so they can be cancelled
     fraud_rings: int = 3  # groups of accounts sharing a device, an address or a upi id, with many claims
     ring_size: int = 3
     claim_rate: float = 0.12  # share of other customers with an earlier claim (closed case) on a past order
@@ -102,7 +104,8 @@ class Config:
 
 
 # 3 faults per type = every variant at least once; 3 days x 130 orders fits all faults for seeds 0-199
-SMALL = Config(days=3, customers=60, riders=10, orders_per_day=130, faults_per_type=3, live_orders=4)
+SMALL = Config(days=3, customers=60, riders=10, orders_per_day=130, faults_per_type=3, live_orders=4,
+               not_packed_orders=2)
 
 
 class GenerationError(Exception):
@@ -387,6 +390,18 @@ class Generator:
                 placed = hour_start + timedelta(seconds=round(offset))
                 if placed < self.cfg.as_of:
                     self.build_order(placed)
+        self.build_not_packed_orders()
+
+    def build_not_packed_orders(self) -> None:
+        """the last orders, placed 20 to 50 seconds before as_of: placed or confirmed, packing not started. they draw
+        from a stream of their own, so every other row comes out as before (only later ids move up)."""
+        main, self.rng = self.rng, random.Random(f"{self.seed}:not_packed")
+        try:
+            for placed in sorted(self.cfg.as_of - timedelta(seconds=round(self.rng.uniform(20, 50)))
+                                 for _ in range(self.cfg.not_packed_orders)):
+                self.build_order(placed)
+        finally:
+            self.rng = main
 
     def build_order(self, placed: datetime) -> None:
         rng, as_of = self.rng, self.cfg.as_of
@@ -478,13 +493,23 @@ class Generator:
         self.build_payment(rec, total)
         if cancelled:
             if times["cancelled"] + secs(1) <= as_of:  # refund one minute after the cancel
-                self.add("refunds_wallet.refunds", {
-                    "refund_id": self.next_id("RF-", 6), "order_id": order_id, "amount_paise": total,
-                    "destination": "source", "status": "COMPLETED", "reason": "order_cancelled", "case_id": None,
-                    "decision_record_id": None, "created_at": times["cancelled"] + secs(1)})
+                self.add_refund(order, total, "source", "order_cancelled", None, times["cancelled"] + secs(1),
+                                "business", "order", "order_cancelled")
         else:
             self.build_fulfilment(rec, pick_times, distance_m, promised)
         self.orders.append(rec)
+
+    def add_refund(self, order: dict, amount: int, destination: str, reason: str, case_id: str | None, at: datetime,
+                   route: str, part: str, basis: str) -> dict:
+        """a refund the business already made, with the part it paid for (each part is paid at most once)."""
+        row = self.add("refunds_wallet.refunds", {
+            "refund_id": self.next_id("RF-", 6), "order_id": order["order_id"], "amount_paise": amount,
+            "destination": destination, "status": "COMPLETED", "reason": reason, "case_id": case_id,
+            "decision_record_id": None, "created_at": at, "customer_id": order["customer_id"], "route": route,
+            "idempotency_key": None})
+        self.add("refunds_wallet.refund_parts", {"refund_id": row["refund_id"], "order_id": order["order_id"],
+                                                 "part": part, "amount_paise": amount, "basis": basis})
+        return row
 
     def build_payment(self, rec: OrderRec, amount: int) -> None:
         rng, placed = self.rng, rec.order["placed_at"]
@@ -701,11 +726,9 @@ class Generator:
             at = at + secs(rng.uniform(1, 4))
             if to == "ACTIONING":
                 line = rng.choice(rec.lines)
-                self.add("refunds_wallet.refunds", {
-                    "refund_id": self.next_id("RF-", 6), "order_id": order["order_id"],
-                    "amount_paise": line["qty"] * line["unit_paise"], "destination": rng.choice(["source", "wallet"]),
-                    "status": "COMPLETED", "reason": f"{issue}_claim", "case_id": case_id, "decision_record_id": None,
-                    "created_at": at})
+                self.add_refund(order, line["qty"] * line["unit_paise"], rng.choice(["source", "wallet"]),
+                                f"{issue}_claim", case_id, at, "person" if outcome == "escalated" else "auto",
+                                f"line:{line['line_no']}", "proven")
             if to == "ESCALATED":
                 ticket = self.add("support.tickets", {
                     "ticket_id": self.next_id("TKT-", 6), "case_id": case_id, "status": "OPEN", "priority": "normal",

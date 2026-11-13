@@ -1,6 +1,7 @@
 """the real investigators inside the case graph, on the test database: a customer's message opens a case, the
 minimum checks run side by side (risk after the history and the order), and every finding posted to the board is
-proven by a read made in this case. the case still waits for a person: the deciding steps come in phase 3."""
+proven by a read made in this case. then the business's rules decide (phase 3): here the scripted reconciler
+settles nothing, so a small claim of a customer of low risk gets the benefit of the doubt."""
 
 import pytest
 
@@ -45,7 +46,7 @@ def test_a_store_miss_is_found_by_the_real_checks(chat_as, data, model, cases, s
     fault = data.fault("missing_item", "store_miss")
     sku = fault["facts"]["missing"][0]["sku"]
     done = claim_missing(chat_as, data, model, fault, sku)
-    assert done["message"]["kind"] == "waiting_for_person"
+    assert done["message"]["kind"] == "wallet_credited"  # nothing settled: benefit of doubt, wallet
     ran = check_spans(spans)
     assert ran == {"order", "inventory_store", "delivery", "customer_history", "risk"}
     (case,) = cases()
@@ -107,7 +108,7 @@ def test_the_fact_sheet_is_kept_with_the_plan_and_cites_only_this_cases_reads(ch
     fault = data.fault("missing_item", "store_miss")
     sku = fault["facts"]["missing"][0]["sku"]
     done = claim_missing(chat_as, data, model, fault, sku)
-    assert done["message"]["kind"] == "waiting_for_person"
+    assert done["message"]["kind"] == "wallet_credited"
     (case,) = cases()
     findings, ledger = board_of(case["case_id"])
     (sheet,), (plan,) = stored(case["case_id"])
@@ -138,6 +139,7 @@ def test_the_customer_sees_each_check_start_and_finish_in_fixed_words(chat_as, d
     allowed = set(progress_reporter.LABELS.values()) | {progress_reporter.STARTING}
     assert shown and {e["text"] for e in shown} <= allowed
     assert shown[0]["text"] == progress_reporter.STARTING
-    assert sum(e["state"] == "started" for e in shown) - 1 == sum(e["state"] == "finished" for e in shown) == 5
+    # the five checks, then the step that works out what to do
+    assert sum(e["state"] == "started" for e in shown) - 1 == sum(e["state"] == "finished" for e in shown) == 6
     assert max(i for i, k in enumerate(kinds) if k == "progress") < kinds.index("done")
     assert not any(w in e["text"].lower() for e in shown for w in ("risk", "fraud"))

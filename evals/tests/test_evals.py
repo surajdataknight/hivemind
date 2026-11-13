@@ -79,9 +79,92 @@ def test_a_store_miss_found_and_corroborated_passes_every_check(small_set, servi
     g = grade(s, t, records(t.conversation_id))
     assert g.passed, g.checks
     assert set(g.checks) == {"case", "wrong_order", "risk_unsaid", "finished", "minimum_checks", "no_loops",
-                             "evidence", "signal", "conclusion"}
+                             "evidence", "signal", "conclusion", "money", "once", "decision_record", "way"}
     assert g.metrics["model_calls"] >= 3  # the intake, the case lead, the reconciler (and any notes read)
     assert g.metrics["tokens"] > 0 and g.metrics["findings"] > 0
+    assert g.metrics["paid_paise"] == s.owed_paise  # phase 3: refunded alone, to the rupee
+
+
+# the final database checks (phase 3) on records that are wrong
+
+
+def paid(amount, basis, destination="source"):
+    return {"amount_paise": amount, "destination": destination,
+            "parts": [{"part": "line:1", "amount_paise": amount, "basis": basis}]}
+
+
+@pytest.mark.parametrize("scenario, state, refunds, ok", [
+    ("missing_item/store_miss", "RESOLVED", [paid(1200, "proven")], True),
+    ("missing_item/store_miss", "RESOLVED", [paid(1100, "proven")], False),          # short
+    ("missing_item/store_miss", "AWAITING_HUMAN", [], False),                         # owed and proven: not paid
+    ("fraud_ring/false_claim", "AWAITING_HUMAN", [], True),
+    ("fraud_ring/false_claim", "RESOLVED", [paid(5000, "benefit_of_doubt")], False),  # a ring member paid
+    ("conflicting_records/item_missing", "RESOLVED", [], False),                      # not with a person
+    ("missing_item/false_claim", "RESOLVED", [], True),
+    ("missing_item/false_claim", "RESOLVED", [paid(9000, "benefit_of_doubt")], True),
+    ("missing_item/false_claim", "RESOLVED", [paid(9000, "proven")], False),          # called proven
+    ("missing_item/false_claim", "RESOLVED", [paid(30_100, "benefit_of_doubt")], False),  # over the cap
+])
+def test_money_is_graded_against_what_the_truth_owes(small_set, scenario, state, refunds, ok):
+    from hivemind_evals.grader import money_right
+
+    s = small_set[scenario]
+    if scenario == "missing_item/store_miss":
+        assert s.owed_paise == 1200
+    assert money_right(s, state, refunds)[0] is ok
+
+
+def test_a_second_refund_a_half_done_action_or_a_broken_chain_fails(small_set):
+    from hivemind_backend.evidence import canonical_json
+    from hivemind_evals.grader import Grade, Records, grade_actions
+
+    import hashlib
+
+    s = small_set["missing_item/store_miss"]
+    case = {"case_id": "CASE-0123456789AB", "state": "RESOLVED"}
+    body = {"route": "auto", "prev_record_hash": None}
+    good = [{"record": body, "record_hash": "sha256:" + hashlib.sha256(canonical_json(body)).hexdigest()}]
+
+    def graded(refunds, unfinished=(), records=good):
+        g = Grade(s.scenario_id, "hivemind")
+        grade_actions(g, s, case, Records([case], {}, {}, {}, {}, {}, {case["case_id"]: refunds},
+                                          {case["case_id"]: records}, {case["case_id"]: list(unfinished)}))
+        return g.checks
+
+    one = [paid(1200, "proven")]
+    assert all(c["ok"] for c in graded(one).values())
+    assert graded(one * 2)["once"]["ok"] is False
+    assert graded(one, unfinished=["CASE-0123456789AB:remedy:1"])["once"]["ok"] is False
+    assert graded(one, records=[])["decision_record"]["ok"] is False
+    edited = [{"record": {**body, "route": "person"}, "record_hash": good[0]["record_hash"]}]
+    assert graded(one, records=edited)["decision_record"]["ok"] is False
+
+
+def decided(*allowed):
+    return [{"record": {"eligibility": {"parts": [{"part": "line:1", "outcome": "remedy", "allowed": list(allowed)}]}}}]
+
+
+@pytest.mark.parametrize("asks_for, allowed, went, ok", [
+    ("wallet", ["refund_to_source", "wallet_credit"], "wallet", True),
+    ("wallet", ["refund_to_source", "wallet_credit"], "source", False),   # asked for the wallet, sent to the card
+    ("money_back", ["refund_to_source", "wallet_credit"], "source", True),
+    ("check", ["refund_to_source", "wallet_credit"], "wallet", False),    # never asked for the wallet
+    ("wallet", ["refund_to_source"], "source", True),                     # only the card allowed
+    ("check", ["wallet_credit"], "wallet", True),                         # only the wallet allowed
+])
+def test_the_money_goes_where_the_customer_asked(small_set, asks_for, allowed, went, ok):
+    from dataclasses import replace
+
+    from hivemind_evals.grader import way_right
+
+    s = replace(small_set["missing_item/store_miss"], asks_for=asks_for)
+    assert way_right(s, [paid(1200, "proven", went)], decided(*allowed))[0] is ok
+
+
+def test_the_small_set_asks_for_the_money_in_natural_words(small_set):
+    asks = {sid: s.asks_for for sid, s in small_set.items() if s.asks_for != "check"}
+    assert sorted(asks.values()) == ["money_back", "wallet"]
+    assert opening(small_set["missing_item/store_miss"]).endswith("Please give my money back.")
 
 
 def test_an_order_named_by_its_day_opens_the_case_on_the_truths_order(small_set, service, shop, model, records):

@@ -517,3 +517,154 @@ class CaseStateRequest(BaseModel):
     state: CaseState
     reason: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,59}$", examples=["reply_sent"],
                                description="why the case moves, as a short code; kept in the case's history")
+
+
+# support: what the rules allow on a case (c18), and the action gateway (c22)
+
+Part = Annotated[str, Field(pattern=r"^(line:\d{1,3}|capture:CAP-[0-9A-Z]{6,12}|intent:PI-[0-9A-Z]{6,12}|order)$",
+                            examples=["line:2"], description="what a remedy pays for: an order line, an extra "
+                                                             "capture, a failed debit, or the whole order")]
+ClaimStatus = Literal["corroborated", "uncorroborated", "contradicted"]
+RiskBand = Literal["low", "elevated", "high"]
+Verdict = Literal["sufficient", "sufficient_with_uncertainty", "insufficient_escalate"]
+RefundType = Literal["refund_to_source", "wallet_credit"]
+
+
+class ClaimedPart(BaseModel):
+    part: Part
+    status: ClaimStatus = Field(description="what the investigation concluded about this part of the claim")
+
+
+class EligibilityRequest(BaseModel):
+    """what the investigation concluded; every amount comes from the business's own records, never from here."""
+
+    claims: list[ClaimedPart] = Field(default_factory=list, max_length=20)
+    risk_band: RiskBand | None = Field(default=None, description="none when the case had no risk check")
+    records_conflict: bool = Field(default=False, description="the records contradict each other")
+    verdict: Verdict | None = Field(default=None, description="the evidence reconciler's verdict, if one ran")
+
+
+class EligiblePart(BaseModel):
+    part: str
+    name: str | None = Field(description="the order line's name, for a line")
+    outcome: Literal["remedy", "person", "nothing_owed"]
+    kind: Literal["refund", "cancel"] | None
+    allowed: list[RefundType] = Field(description="the ways a refund may be paid")
+    max_amount_paise: Paise = Field(description="the most a remedy may be; for nothing owed, what was already paid")
+    basis: Literal["proven", "benefit_of_doubt", "payment_error", "order_cancelled"] | None
+    requires: Literal["auto", "human"] | None = Field(description="auto: support may do it alone")
+    rule: str
+    why: str
+    policy_refs: list[str] = Field(description="policy_id@version of the sections that explain the rule")
+
+
+class ClaimsProfile(BaseModel):
+    earlier_claims: int
+    delivered_orders: int
+    claim_ratio: float
+
+
+class DailyUsage(BaseModel):
+    bod_today_paise: Paise
+    auto_today_paise: Paise
+    global_auto_today_paise: Paise
+
+
+class Eligibility(BaseModel):
+    case_id: str
+    order_id: str | None
+    issue_type: IssueType
+    rules_version: str
+    risk_band: RiskBand | None
+    parts: list[EligiblePart]
+    profile: ClaimsProfile
+    usage: DailyUsage
+    limits: dict[str, int | float]
+
+
+class EligibilityResponse(Eligibility, Evidenced):
+    pass
+
+
+KEY_PATTERN = r"^CASE-[0-9A-F]{12}:(remedy:\d{1,2}|cancel|outcome:\d{1,6})$"
+CaseIdField = Annotated[str, Field(pattern=r"^CASE-[0-9A-F]{12}$", examples=["CASE-0123456789AB"])]
+
+
+class ActionPart(BaseModel):
+    part: Part
+    amount_paise: Paise = Field(gt=0)
+
+
+class RefundRequest(BaseModel):
+    case_id: CaseIdField
+    parts: list[ActionPart] = Field(min_length=1, max_length=20)
+    eligibility: EligibilityRequest = Field(description="the same inputs the eligibility answer came from; the "
+                                                        "gateway runs the rules again on them")
+    decision: dict = Field(default_factory=dict, description="hivemind's decision record for this action; the gateway "
+                                                             "adds the actions and keeps it")
+
+
+class RefundPart(BaseModel):
+    part: str
+    amount_paise: Paise
+    basis: str
+
+
+class RefundMade(BaseModel):
+    refund_id: str
+    case_id: str
+    order_id: str
+    amount_paise: Paise
+    destination: Literal["source", "wallet"]
+    status: str
+    expected_settlement: str = Field(description="when the money reaches the customer, in words")
+    parts: list[RefundPart]
+    decision_record_id: str
+    idempotency_key: str
+    rules_version: str
+    created_at: UtcDatetime
+    replayed: bool = Field(description="true when this key was seen before: the stored answer, nothing done again")
+
+
+class CancelRequest(BaseModel):
+    case_id: CaseIdField
+    eligibility: EligibilityRequest = Field(default_factory=EligibilityRequest)
+    decision: dict = Field(default_factory=dict)
+
+
+class RefundInCancel(BaseModel):
+    refund_id: str
+    order_id: str
+    amount_paise: Paise
+    destination: Literal["source", "wallet"]
+    status: str
+    expected_settlement: str
+    parts: list[RefundPart]
+
+
+class Cancelled(BaseModel):
+    case_id: str
+    order_id: str
+    status: Literal["CANCELLED"]
+    refund: RefundInCancel | None = Field(description="the money paid for the order, going back; none if nothing was "
+                                                       "paid")
+    decision_record_id: str
+    idempotency_key: str
+    rules_version: str
+    created_at: UtcDatetime
+    replayed: bool
+
+
+class OutcomeRequest(BaseModel):
+    case_id: CaseIdField
+    outcome: Literal["to_a_person", "nothing_owed", "already_refunded"]
+    decision: dict = Field(default_factory=dict)
+
+
+class OutcomeRecorded(BaseModel):
+    case_id: str
+    outcome: str
+    decision_record_id: str
+    idempotency_key: str
+    created_at: UtcDatetime
+    replayed: bool

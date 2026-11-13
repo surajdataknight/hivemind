@@ -31,4 +31,4 @@ markers = [
     "live_capable: runs on the real models when --live-llm is given",
 ]
 addopts = "--import-mode=importlib"
-pythonpath = ["agents/tests"]
+pythonpath = ["agents/tests", "backend/tests"]

@@ -182,8 +182,8 @@ def intake_of(issues: int) -> IntakeV1:
 
 
 @pytest.mark.parametrize("issues, replans, expected", [
-    (1, 0, "replan"), (1, 1, "waiting_for_person"),
-    (2, 1, "replan"), (2, 2, "waiting_for_person"),
+    (1, 0, "replan"), (1, 1, "decide"),
+    (2, 1, "replan"), (2, 2, "decide"),
 ])
 def test_a_standard_case_is_revised_once_a_complex_one_twice(issues, replans, expected):
     state = {"plan": Plan(source="planner", replans=replans), "follow_ups": ["more on the bag"],
@@ -191,6 +191,6 @@ def test_a_standard_case_is_revised_once_a_complex_one_twice(issues, replans, ex
     assert graph.after_finish(state) == expected
 
 
-def test_with_no_follow_ups_the_case_waits_for_a_person():
+def test_with_no_follow_ups_the_case_goes_to_the_rules():
     state = {"plan": Plan(source="planner"), "follow_ups": None, "intake": intake_of(1)}
-    assert graph.after_finish(state) == "waiting_for_person"
+    assert graph.after_finish(state) == "decide"

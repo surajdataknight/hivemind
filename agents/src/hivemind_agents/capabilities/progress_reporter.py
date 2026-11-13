@@ -13,6 +13,8 @@ LABELS = {
     "payment": "Checking your payment",
     "customer_history": "Reviewing your request",
     "risk": "Reviewing your request",
+    "decision": "Working out the next step",
+    "action": "Putting this right",
 }
 OTHER = "Looking into this"
 STARTING = "Looking into your request"   # once the plan is made, before the first check

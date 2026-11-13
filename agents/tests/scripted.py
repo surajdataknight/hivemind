@@ -15,7 +15,8 @@ class ScriptedModel:
         self.intakes: list = []
         self.replies: list = []
         self.labels: list = []  # quarantined reader answers; when empty, a faithful reading of the note
-        self.reconciles: list = []  # evidence reconciler answers; when empty, a plain one (see plain_sheet)
+        self.reconciles: list = []  # evidence reconciler answers (or a function of the prompt); when empty, a
+        #                             plain one (see plain_sheet)
         self.calls: list[dict] = []
         self.down = False
 
@@ -29,7 +30,8 @@ class ScriptedModel:
             return Completion(json.dumps({"label": label}), 120, 8)
         if system == reconciler.SYSTEM:
             self.calls[-1]["kind"] = "reconcile"
-            answer = self.reconciles.pop(0) if self.reconciles else plain_sheet(prompt)
+            answer = self.reconciles.pop(0) if self.reconciles else plain_sheet
+            answer = answer(prompt) if callable(answer) else answer
             return Completion(answer if isinstance(answer, str) else json.dumps(answer), 900, 150)
         if not self.intakes:
             raise AssertionError(f"the model was asked to read a message the test did not expect:\n{prompt}")
@@ -78,8 +80,8 @@ def label_calls(model: "ScriptedModel") -> int:
 
 
 def side_calls(model: "ScriptedModel") -> int:
-    """the model calls a case makes besides the intake, the case lead and the reply: the notes read and the
-    reconciler's sheets."""
+    """the model calls a case makes besides the intake, the case lead and the reply: the notes read, the
+    reconciler's sheets and the resolution planner's choices."""
     return sum(1 for c in model.calls if c["kind"] in ("label", "reconcile"))
 
 
@@ -96,6 +98,33 @@ def plain_sheet(prompt: str) -> dict:
             "verdict": "sufficient_with_uncertainty"}
 
 
+def careful_sheet(prompt: str) -> dict:
+    """a reconciler answer that reads the code's cross-checks: a claimed line is corroborated when a record points
+    to it and none against it, contradicted when only records against it, else unsettled; c1 (a payment) is
+    corroborated when the payment records show it. contradictions are the cross-checks' conflicts."""
+    labels = re.findall(r"^(F\d+) \[", prompt, re.M)
+    lines = re.findall(r"^- (L\d+): .* \(([^()]+)\), \d+ x", prompt, re.M)
+    rows = re.findall(r"^- (.+?): ([a-z_]+) \(([a-z]+)\), from ([F\d, ]*):", prompt, re.M)
+    claims = []
+    for label, sku in lines:
+        mine = [r for r in rows if r[0] in (sku, "the bags")]
+        up = [r for r in mine if r[2] == "supports"]
+        down = [r for r in mine if r[2] == "against"]
+        status = "corroborated" if up and not down else "contradicted" if down and not up else "uncorroborated"
+        cites = sorted({c.strip() for r in (up + down) for c in r[3].split(",") if c.strip()})
+        claims.append({"about": label, "status": status, "cites": cites})
+    if re.search(r"^- C1: ", prompt, re.M):
+        paid = [r for r in rows if r[0] == "the payment" and r[2] == "supports"]
+        claims.append({"about": "C1", "status": "corroborated" if paid else "uncorroborated",
+                       "cites": sorted({c.strip() for r in paid for c in r[3].split(",") if c.strip()})})
+    conflicts = [{"first": r[3].split(",")[0].strip(), "second": r[3].split(",")[1].strip(), "why": r[1]}
+                 for r in rows if r[2] == "conflict" and "," in r[3]]
+    settled = all(c["status"] != "uncorroborated" for c in claims)
+    return {"facts": [{"statement": f"finding {label} as posted", "cites": [label]} for label in labels],
+            "claims": claims, "contradictions": conflicts, "gaps": [], "follow_ups": [],
+            "verdict": "sufficient" if settled and claims and not conflicts else "sufficient_with_uncertainty"}
+
+
 def faithful_reply(prompt: str) -> str:
     found = re.search(r"^what the check found: (.*)$", prompt, re.M).group(1)
     if "you cannot correct the amount yourself" in prompt:
@@ -110,7 +139,8 @@ def draft(scope="in_scope", issues=(), language="en", sentiment="neutral", urgen
             "language": language, "needs_clarification": unclear}
 
 
-def issue(case_type, order_id=None, coupon_code=None, items=(), amount=None, latest=False, day=None) -> dict:
+def issue(case_type, order_id=None, coupon_code=None, items=(), amount=None, latest=False, day=None,
+          money_to="not_said") -> dict:
     return {"case_type": case_type, "order_id": order_id, "items_mentioned": list(items),
             "claimed_amount_rupees": amount, "coupon_code": coupon_code, "about_latest_order": latest,
-            "order_day": day}
+            "order_day": day, "money_to": money_to}

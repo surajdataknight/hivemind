@@ -254,20 +254,20 @@ def test_20_legal_gets_only_the_reply(chat_as, data, model, cases, live):
     assert text == replies.LEGAL and cases() == []
 
 
-def test_21_missing_item_waits_for_a_person(chat_as, data, model, cases, live):
+def test_21_a_small_unproven_missing_item_is_credited_to_the_wallet(chat_as, data, model, cases, live):
+    """the butter was packed, so nothing proves it missing; the customer is of low risk and the claim is small, so
+    the rules give the benefit of the doubt (blueprint s08): to the wallet only, though they said refund."""
     fault = data.fault("missing_item", "store_miss")
     model.intakes.append(draft(issues=[issue("item_missing_or_wrong", order_id=fault["order_id"],
                                              items=["butter"])], sentiment="negative"))
     model.intakes.append(NO_EXTRA_CHECKS)  # the case lead: the minimum checks are enough
     done = chat_as(fault["customer_id"]).say(f"Butter was missing from my order {fault['order_id']}. Refund please.")
-    # the intake, the case lead, and one quarantined reading per partner or store note near the order
-    check(done, "waiting_for_person", calls=2 + side_calls(model), state="AWAITING_HUMAN", live=live,
-          has=("a missing or wrong item", "person"), lacks=NO_PROMISES)
+    # the intake, the case lead, one quarantined reading per note near the order, the reconciler, and the reply
+    check(done, "wallet_credited", calls=3 + side_calls(model), state="RESOLVED", live=live,
+          has=("₹62", "Butter", "wallet"), lacks=("risk", "fraud"))
     (case,) = cases()
     assert (case["issue_type"], case["order_id"], case["state"]) == (
-        "item_missing_or_wrong", fault["order_id"], "AWAITING_HUMAN")
-    # no refund exists: nothing in this build can move money
-    assert all(r["order_id"] != fault["order_id"] or r["case_id"] is None for r in data.t["refunds_wallet.refunds"])
+        "item_missing_or_wrong", fault["order_id"], "RESOLVED")
 
 
 def test_22_greeting_and_thanks(chat_as, data, cases):
@@ -308,7 +308,8 @@ def test_25_two_problems_in_one_message_two_cases_one_reply(chat_as, data, model
     done = chat.say("My last delivered order had no bread in it, and also where is my order today? It hasn't come yet.")
     text = check(done, "several", calls=2 + side_calls(model), live=live, has=("a missing or wrong item", order["order_id"], "on its way"))
     first, second = text.split(replies.PART_BREAK)
-    assert first == replies.waiting_for_person("item_missing_or_wrong") and order["order_id"] in second
+    # two issues in one message: a claim refund waits for a person until the reviewer exists (phase 4)
+    assert first == replies.with_a_person("item_missing_or_wrong") and order["order_id"] in second
     assert " ".join(chat.streamed_text().split()) == " ".join(text.split())  # shown in the same order, as it came
     rows = {c["issue_type"]: c for c in cases()}
     assert set(rows) == {"item_missing_or_wrong", "where_is_my_order"}
@@ -483,8 +484,8 @@ def test_32_a_missing_item_with_no_item_said_asks_which_item(chat_as, data, mode
     model.intakes.append(NO_EXTRA_CHECKS)
     labels = side_calls(model)
     done = chat.press(chips[0])
-    check(done, "waiting_for_person", calls=1 + side_calls(model) - labels, state="AWAITING_HUMAN",
-          has=("a missing or wrong item",))
+    # the case lead, the side calls, the reply: the item pressed is worked (a small claim: benefit of the doubt)
+    check(done, "wallet_credited", calls=2 + side_calls(model) - labels, state="RESOLVED", has=(chips[0]["text"],))
     (case,) = cases()
     assert (case["issue_type"], case["order_id"]) == ("item_missing_or_wrong", fault["order_id"])
     assert chat.stored()[-1]["meta"]["intake"]["issues"][0]["items_mentioned"] == [chips[0]["text"]]
@@ -512,6 +513,6 @@ def test_33_an_answer_that_is_not_clean_gets_the_question_once_more_then_is_read
 
     model.intakes.append(NO_EXTRA_CHECKS)
     done = chat.say("the " + third["message"]["chips"][0]["text"])  # a clean typed answer at last
-    check(done, "waiting_for_person", state="AWAITING_HUMAN", has=("a missing or wrong item",))
+    check(done, "wallet_credited", state="RESOLVED", has=(third["message"]["chips"][0]["text"],))
     (case,) = cases()
     assert case["order_id"] == fault["order_id"]

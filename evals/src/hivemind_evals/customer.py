@@ -41,8 +41,10 @@ def _problem(s: Scenario) -> str:
     told = "" if s.names_items else (" In your first message do not name the items: say only that something was "
                                      "missing. Name them only when the assistant asks which item, by pressing its "
                                      "button or typing the names.")
+    wants = {"money_back": " You want your money back; say so in your first message.",
+             "wallet": " You want the money in your HiveMart wallet; say so in your first message."}.get(s.asks_for, "")
     return (f"{s.summary}. Items: {items}." + (f" The coupon code: {s.code}." if s.code else "")
-            + f" Refer to {which}.{told}")
+            + f" Refer to {which}.{told}{wants}")
 
 
 def build_prompt(s: Scenario, transcript: list[dict]) -> str:

@@ -166,6 +166,16 @@ def test_a_reply_that_leaves_out_the_amount_owed_is_retried():
     assert events[-1] == {"type": "replace", "text": full}
     assert "it does not give the amount ₹55.10" in router.prompts[1]
     # too little: both what was due and what was taken
-    assert communicator.missing_from("₹91.20 was due.", finding("applied_too_little", None, due=9120, applied=4560)) \
-        == ["it does not give the amount ₹45.60"]
-    assert communicator.missing_from("Nothing is owed.", finding()) == []
+    too_little = communicator.must_state(finding("applied_too_little", None, due=9120, applied=4560))
+    assert communicator.missing_from("₹91.20 was due.", too_little) == ["it does not give the amount ₹45.60"]
+    assert communicator.missing_from("Nothing is owed.", communicator.must_state(finding())) == []
+
+
+def test_a_refund_reply_may_name_its_order():
+    """seen 2026-11-13: a wallet reply naming ORD-100345 was thrown away, as the order was not in its facts."""
+    made = {"order_id": "ORD-100345", "amount_paise": 46100, "destination": "wallet"}
+    parts = [{"part": "line:4", "name": "Sunrise Farms Salted Butter (100 g)", "amount_paise": 46100,
+              "basis": "proven"}]
+    facts = communicator.refund_facts(made, parts, ["Butter: the records show it was not delivered."])
+    reply = "₹461 for the butter in order ORD-100345 has been added to your HiveMart wallet."
+    assert communicator.check_reply(reply, facts) == []

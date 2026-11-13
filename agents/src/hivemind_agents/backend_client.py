@@ -26,6 +26,15 @@ class NotFound(Exception):
     pass
 
 
+class ActionRefused(Exception):
+    """the business said no to an action (a re-check failed, the key was used for another request, the case is not
+    being decided): asking again would get the same answer."""
+
+    def __init__(self, operation: str, status: int, detail: str):
+        super().__init__(f"{operation}: http {status}: {detail}")
+        self.status, self.detail = status, detail
+
+
 class BackendClient:
     def __init__(self, http: Http, case_token: str, tracer: Tracer, ledger: Ledger | None = None):
         self._http = http
@@ -46,10 +55,12 @@ class BackendClient:
         self._closed = True
 
     def _call(self, operation: str, method: str, path: str, *, params: dict | None = None,
-              body: dict | None = None) -> dict:
+              body: dict | None = None, key: str | None = None) -> dict:
         if self._closed:
             raise BackendError(f"{operation}: the check was stopped")
         headers = {**self._auth, **trace_headers()}
+        if key:
+            headers["Idempotency-Key"] = key
         if self.case_id:
             headers["X-Case-Id"] = self.case_id
         with self._tracer.tool(operation) as span:
@@ -60,6 +71,10 @@ class BackendClient:
             except Exception as exc:
                 raise BackendError(f"{operation}: {type(exc).__name__}") from exc
             span.set_attribute("http.response.status_code", response.status_code)
+            if key and 400 <= response.status_code < 500:  # an action the business refused, not a failure
+                detail = _detail(response)
+                span.set_attribute("hivemind.action.refused", detail[:200])
+                raise ActionRefused(operation, response.status_code, detail)
             if response.status_code >= 400 and response.status_code != 404:
                 raise BackendError(f"{operation}: http {response.status_code}")
             data = response.json()
@@ -149,3 +164,27 @@ class BackendClient:
 
     def move_case(self, case_id: str, state: str, reason: str | None = None) -> dict:
         return self._call("moveCase", "POST", f"/v1/cases/{case_id}/state", body={"state": state, "reason": reason})
+
+    # what the business's rules allow on a case (c18), and its actions (c22): each action carries a key, so asking
+    # again with the same key never does it twice
+    def eligibility(self, case_id: str, inputs: dict) -> dict:
+        return self._call("evaluateEligibility", "POST", f"/v1/cases/{case_id}/eligibility", body=inputs)
+
+    def refund(self, body: dict, key: str) -> dict:
+        return self._call("refundToSource", "POST", "/v1/actions/refunds", body=body, key=key)
+
+    def wallet_credit(self, body: dict, key: str) -> dict:
+        return self._call("creditWallet", "POST", "/v1/actions/wallet-credits", body=body, key=key)
+
+    def cancel(self, body: dict, key: str) -> dict:
+        return self._call("cancelOrder", "POST", "/v1/actions/cancellations", body=body, key=key)
+
+    def record_outcome(self, body: dict, key: str) -> dict:
+        return self._call("recordOutcome", "POST", "/v1/actions/outcomes", body=body, key=key)
+
+
+def _detail(response: Any) -> str:
+    try:
+        return str(response.json().get("detail", ""))
+    except Exception:  # noqa: BLE001
+        return ""

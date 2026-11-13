@@ -1,5 +1,5 @@
-"""the simulated business's apis: reads, the fake sign-in, and opening a support case. money and order changes
-come with the action gateway."""
+"""the simulated business's apis: reads, the fake sign-in, support cases, what the rules allow on a case, and the
+action gateway, the only way support changes money or an order."""
 
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -8,7 +8,7 @@ from typing import Annotated
 from uuid import uuid4
 
 import psycopg
-from fastapi import Depends, FastAPI, Path, Query, Request
+from fastapi import Depends, FastAPI, Header, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
@@ -16,11 +16,11 @@ from psycopg.rows import dict_row
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException
 
-from hivemind_backend import auth, cases, db, models, promotions
+from hivemind_backend import auth, cases, db, eligibility, gateway, models, promotions
 from hivemind_backend.auth import Caller, scope
 from hivemind_backend.evidence import evidence_id
 
-API_VERSION = "0.5.0"
+API_VERSION = "0.6.0"
 MAX_WINDOW = timedelta(days=7)
 PACKED_OR_LATER = {"PACKED", "OUT_FOR_DELIVERY", "DELIVERED", "PARTIALLY_FULFILLED"}
 
@@ -75,6 +75,7 @@ async def http_problem(request: Request, exc: HTTPException) -> JSONResponse:
         403: ("/problems/forbidden", "not allowed"),
         404: ("/problems/not-found", "not found"),
         409: ("/problems/conflict", "conflict"),
+        422: ("/problems/invalid-request", "invalid request"),
         503: ("/problems/no-data", "no data loaded"),
     }
     if exc.status_code in known:
@@ -169,6 +170,9 @@ def list_sign_in_options(conn: DbConn):
         ("a coupon that was not accepted",
          "select customer_id from promotions.redemptions where status = 'rejected' group by 1 "
          "order by max(at) desc, 1 limit 4", ()),
+        ("an order not packed yet",
+         "select customer_id from orders.orders where status in ('PLACED', 'CONFIRMED') group by 1 "
+         "order by max(placed_at) desc, 1 limit 4", ()),
         ("a coupon that was applied",
          "select customer_id from promotions.redemptions where status = 'applied' group by 1 "
          "order by max(at) desc, 1 limit 4", ()),
@@ -644,6 +648,87 @@ def move_case(case_id: CaseId, body: models.CaseStateRequest, conn: DbConn,
             f"update support.cases set state = %s, updated_at = %s where case_id = %s returning {CASE_COLUMNS}",
             (body.state, now, case_id),
         ).fetchone()
+
+
+# what the rules allow on a case (c18), and the action gateway (c22): the only writes of money and orders
+
+
+def require_case(conn: psycopg.Connection, case_id: str, who: Caller) -> dict:
+    row = conn.execute(f"select {CASE_COLUMNS} from support.cases where case_id = %s and customer_id = %s",
+                       (case_id, who.customer_id)).fetchone()
+    if row is None:
+        raise not_found(f"case {case_id} does not exist")
+    return row
+
+
+@app.post("/v1/cases/{case_id}/eligibility", response_model=models.EligibilityResponse, responses=ERRORS,
+          tags=["support"], operation_id="evaluateEligibility",
+          summary="what the business's rules allow on this case, from what the investigation concluded")
+def evaluate_eligibility(case_id: CaseId, body: models.EligibilityRequest, conn: DbConn,
+                         who: Caller = scope("eligibility:read")):
+    case = require_case(conn, case_id, who)
+    claims = [eligibility.Claim(c.part, c.status) for c in body.claims]
+    result = eligibility.evaluate(conn, case, claims, body.risk_band, body.records_conflict, body.verdict,
+                                  sim_now(conn))
+    return evidenced(models.Eligibility, models.EligibilityResponse, result)
+
+
+ACTION_ERRORS = {**ERRORS, 409: PROBLEM}
+KeyHeader = Annotated[str, Header(alias="Idempotency-Key", pattern=models.KEY_PATTERN,
+                                  description="<case id>:remedy:<n>, <case id>:cancel or <case id>:outcome:<n>; "
+                                              "the same key with the same request returns the first answer")]
+
+
+def _refused(exc: gateway.Refused) -> HTTPException:
+    return HTTPException(status_code=exc.status, detail=exc.detail)
+
+
+def _key_for(case_id: str, key: str) -> None:
+    if not key.startswith(case_id + ":"):
+        raise HTTPException(status_code=422, detail="the idempotency key must start with the case id")
+
+
+def _act(request: Request, conn: psycopg.Connection, case_id: str, key: str, run) -> dict:
+    _key_for(case_id, key)
+    try:
+        answer, replayed = run(sim_now(conn), request.headers.get("traceparent"))
+    except gateway.Refused as exc:
+        raise _refused(exc) from None
+    return {**answer, "replayed": replayed}
+
+
+@app.post("/v1/actions/refunds", response_model=models.RefundMade, status_code=201, responses=ACTION_ERRORS,
+          tags=["actions"], operation_id="refundToSource",
+          summary="refund parts of a case's claim to the payment they were paid with, once per key")
+def refund_to_source(request: Request, body: models.RefundRequest, key: KeyHeader, conn: DbConn,
+                     who: Caller = scope("actions:write:self")):
+    return _act(request, conn, body.case_id, key,
+                lambda now, tp: gateway.refund(conn, who, body, key, "source", now, tp))
+
+
+@app.post("/v1/actions/wallet-credits", response_model=models.RefundMade, status_code=201, responses=ACTION_ERRORS,
+          tags=["actions"], operation_id="creditWallet",
+          summary="credit parts of a case's claim to the customer's wallet, once per key")
+def credit_wallet(request: Request, body: models.RefundRequest, key: KeyHeader, conn: DbConn,
+                  who: Caller = scope("actions:write:self")):
+    return _act(request, conn, body.case_id, key,
+                lambda now, tp: gateway.refund(conn, who, body, key, "wallet", now, tp))
+
+
+@app.post("/v1/actions/cancellations", response_model=models.Cancelled, status_code=201, responses=ACTION_ERRORS,
+          tags=["actions"], operation_id="cancelOrder",
+          summary="cancel the case's order before packing starts, and refund what was paid, once per key")
+def cancel_order(request: Request, body: models.CancelRequest, key: KeyHeader, conn: DbConn,
+                 who: Caller = scope("actions:write:self")):
+    return _act(request, conn, body.case_id, key, lambda now, tp: gateway.cancel(conn, who, body, key, now, tp))
+
+
+@app.post("/v1/actions/outcomes", response_model=models.OutcomeRecorded, status_code=201, responses=ACTION_ERRORS,
+          tags=["actions"], operation_id="recordOutcome",
+          summary="keep the decision record of a case decided without moving money, once per key")
+def record_outcome(request: Request, body: models.OutcomeRequest, key: KeyHeader, conn: DbConn,
+                   who: Caller = scope("actions:write:self")):
+    return _act(request, conn, body.case_id, key, lambda now, tp: gateway.record_outcome(conn, who, body, key, now))
 
 
 # the contract: error bodies are application/problem+json

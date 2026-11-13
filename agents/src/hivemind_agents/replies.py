@@ -4,7 +4,7 @@ from datetime import datetime
 
 from hivemind_agents.contracts import Chip, IntentHint, OrderRef
 from hivemind_agents.settings import BUSINESS_NAME
-from hivemind_agents.wording import when
+from hivemind_agents.wording import rupees, when
 
 CAN_HELP_WITH = ("where it is, a missing or wrong item, the quality of an item, a cancellation, a refund, a failed "
                  "payment, how the delivery partner behaved, or an offer or coupon")
@@ -66,6 +66,50 @@ STATUS_LABELS = {
 def waiting_for_person(case_type: str) -> str:
     return (f"I understand this is about {CASE_LABELS[case_type]}. I can't settle this kind of problem by myself yet, "
             "so I've recorded it for a person in customer care to review. You'll get the update here in this chat.")
+
+
+def with_a_person(case_type: str) -> str:
+    """a case support may not settle alone: neutral words, never why (blueprint s09)."""
+    return (f"I understand this is about {CASE_LABELS[case_type]}. I've recorded it for a person in customer care to "
+            "review, and you'll get the update here in this chat.")
+
+
+PENDING_SYSTEM = ("I've asked for this to be put right, but our system hasn't confirmed it yet. Please check back here "
+                  "in a little while; nothing will be done twice.")
+
+
+def cancelled(order_id: str, refund: dict | None) -> str:
+    text = f"I've cancelled order {order_id}."
+    if refund:
+        text += (f" The {rupees(refund['amount_paise'])} you paid is being refunded to your original payment method; "
+                 f"it should reach you in {refund['expected_settlement']}.")
+    return text
+
+
+def cannot_cancel(order_id: str) -> str:
+    return (f"Order {order_id} is already being packed, so I can't cancel it myself. I've recorded your request for a "
+            "person in customer care to review, and you'll get the update here in this chat.")
+
+
+NOTHING_TO_CANCEL = {
+    "delivered": "was already delivered", "cancelled": "is already cancelled",
+    "partially_fulfilled": "was already delivered", "refunded": "is already refunded",
+}
+
+
+def nothing_to_cancel(order_id: str, why: str) -> str:
+    state = NOTHING_TO_CANCEL.get(why.removeprefix("order_"), "can no longer be cancelled")
+    return f"Order {order_id} {state}, so there is nothing to cancel."
+
+
+def already_refunded(order_id: str, amount_paise: int) -> str:
+    return (f"This was already refunded on order {order_id}: {rupees(amount_paise)} in all. Nothing more is owed for "
+            "it, and nothing will be refunded twice.")
+
+
+def nothing_owed_payment(order_id: str) -> str:
+    return (f"I checked the payments on order {order_id}. They show no money taken that should not have been: no "
+            "double charge, and no failed payment that kept your money. So there's nothing to refund.")
 
 
 def order_not_found(order_id: str) -> str:

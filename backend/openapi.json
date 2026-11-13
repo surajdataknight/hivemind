@@ -3,7 +3,7 @@
   "info": {
     "title": "HiveMind simulated business",
     "description": "apis of the simulated quick-commerce grocery business. money is integer paise; times are rfc 3339 utc; errors are rfc 9457 problem details. every read carries an evidence_id. every api except the fake sign-in needs a case token (`Authorization: Bearer ...`); the customer comes from that token, never from the url.",
-    "version": "0.5.0"
+    "version": "0.6.0"
   },
   "paths": {
     "/v1/clock": {
@@ -1968,10 +1968,668 @@
           }
         }
       }
+    },
+    "/v1/cases/{case_id}/eligibility": {
+      "post": {
+        "tags": [
+          "support"
+        ],
+        "summary": "what the business's rules allow on this case, from what the investigation concluded",
+        "operationId": "evaluateEligibility",
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^CASE-[0-9A-F]{12}$",
+              "examples": [
+                "CASE-0123456789AB"
+              ],
+              "title": "Case Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EligibilityRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EligibilityResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/actions/refunds": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "refund parts of a case's claim to the payment they were paid with, once per key",
+        "operationId": "refundToSource",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^CASE-[0-9A-F]{12}:(remedy:\\d{1,2}|cancel|outcome:\\d{1,6})$",
+              "description": "<case id>:remedy:<n>, <case id>:cancel or <case id>:outcome:<n>; the same key with the same request returns the first answer",
+              "title": "Idempotency-Key"
+            },
+            "description": "<case id>:remedy:<n>, <case id>:cancel or <case id>:outcome:<n>; the same key with the same request returns the first answer"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefundRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefundMade"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          }
+        }
+      }
+    },
+    "/v1/actions/wallet-credits": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "credit parts of a case's claim to the customer's wallet, once per key",
+        "operationId": "creditWallet",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^CASE-[0-9A-F]{12}:(remedy:\\d{1,2}|cancel|outcome:\\d{1,6})$",
+              "description": "<case id>:remedy:<n>, <case id>:cancel or <case id>:outcome:<n>; the same key with the same request returns the first answer",
+              "title": "Idempotency-Key"
+            },
+            "description": "<case id>:remedy:<n>, <case id>:cancel or <case id>:outcome:<n>; the same key with the same request returns the first answer"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefundRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefundMade"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          }
+        }
+      }
+    },
+    "/v1/actions/cancellations": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "cancel the case's order before packing starts, and refund what was paid, once per key",
+        "operationId": "cancelOrder",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^CASE-[0-9A-F]{12}:(remedy:\\d{1,2}|cancel|outcome:\\d{1,6})$",
+              "description": "<case id>:remedy:<n>, <case id>:cancel or <case id>:outcome:<n>; the same key with the same request returns the first answer",
+              "title": "Idempotency-Key"
+            },
+            "description": "<case id>:remedy:<n>, <case id>:cancel or <case id>:outcome:<n>; the same key with the same request returns the first answer"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cancelled"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          }
+        }
+      }
+    },
+    "/v1/actions/outcomes": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "keep the decision record of a case decided without moving money, once per key",
+        "operationId": "recordOutcome",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^CASE-[0-9A-F]{12}:(remedy:\\d{1,2}|cancel|outcome:\\d{1,6})$",
+              "description": "<case id>:remedy:<n>, <case id>:cancel or <case id>:outcome:<n>; the same key with the same request returns the first answer",
+              "title": "Idempotency-Key"
+            },
+            "description": "<case id>:remedy:<n>, <case id>:cancel or <case id>:outcome:<n>; the same key with the same request returns the first answer"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OutcomeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutcomeRecorded"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "ActionPart": {
+        "properties": {
+          "part": {
+            "type": "string",
+            "pattern": "^(line:\\d{1,3}|capture:CAP-[0-9A-Z]{6,12}|intent:PI-[0-9A-Z]{6,12}|order)$",
+            "title": "Part",
+            "description": "what a remedy pays for: an order line, an extra capture, a failed debit, or the whole order",
+            "examples": [
+              "line:2"
+            ]
+          },
+          "amount_paise": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Amount Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "part",
+          "amount_paise"
+        ],
+        "title": "ActionPart"
+      },
+      "CancelRequest": {
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "pattern": "^CASE-[0-9A-F]{12}$",
+            "title": "Case Id",
+            "examples": [
+              "CASE-0123456789AB"
+            ]
+          },
+          "eligibility": {
+            "$ref": "#/components/schemas/EligibilityRequest"
+          },
+          "decision": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Decision"
+          }
+        },
+        "type": "object",
+        "required": [
+          "case_id"
+        ],
+        "title": "CancelRequest"
+      },
+      "Cancelled": {
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "status": {
+            "type": "string",
+            "const": "CANCELLED",
+            "title": "Status"
+          },
+          "refund": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RefundInCancel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "the money paid for the order, going back; none if nothing was paid"
+          },
+          "decision_record_id": {
+            "type": "string",
+            "title": "Decision Record Id"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "rules_version": {
+            "type": "string",
+            "title": "Rules Version"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "replayed": {
+            "type": "boolean",
+            "title": "Replayed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "case_id",
+          "order_id",
+          "status",
+          "refund",
+          "decision_record_id",
+          "idempotency_key",
+          "rules_version",
+          "created_at",
+          "replayed"
+        ],
+        "title": "Cancelled"
+      },
       "Capture": {
         "properties": {
           "capture_id": {
@@ -2212,6 +2870,58 @@
         ],
         "title": "ClaimCounts"
       },
+      "ClaimedPart": {
+        "properties": {
+          "part": {
+            "type": "string",
+            "pattern": "^(line:\\d{1,3}|capture:CAP-[0-9A-Z]{6,12}|intent:PI-[0-9A-Z]{6,12}|order)$",
+            "title": "Part",
+            "description": "what a remedy pays for: an order line, an extra capture, a failed debit, or the whole order",
+            "examples": [
+              "line:2"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "corroborated",
+              "uncorroborated",
+              "contradicted"
+            ],
+            "title": "Status",
+            "description": "what the investigation concluded about this part of the claim"
+          }
+        },
+        "type": "object",
+        "required": [
+          "part",
+          "status"
+        ],
+        "title": "ClaimedPart"
+      },
+      "ClaimsProfile": {
+        "properties": {
+          "earlier_claims": {
+            "type": "integer",
+            "title": "Earlier Claims"
+          },
+          "delivered_orders": {
+            "type": "integer",
+            "title": "Delivered Orders"
+          },
+          "claim_ratio": {
+            "type": "number",
+            "title": "Claim Ratio"
+          }
+        },
+        "type": "object",
+        "required": [
+          "earlier_claims",
+          "delivered_orders",
+          "claim_ratio"
+        ],
+        "title": "ClaimsProfile"
+      },
       "ClockResponse": {
         "properties": {
           "evidence_id": {
@@ -2232,6 +2942,311 @@
           "now"
         ],
         "title": "ClockResponse"
+      },
+      "DailyUsage": {
+        "properties": {
+          "bod_today_paise": {
+            "type": "integer",
+            "title": "Bod Today Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "auto_today_paise": {
+            "type": "integer",
+            "title": "Auto Today Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "global_auto_today_paise": {
+            "type": "integer",
+            "title": "Global Auto Today Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "bod_today_paise",
+          "auto_today_paise",
+          "global_auto_today_paise"
+        ],
+        "title": "DailyUsage"
+      },
+      "EligibilityRequest": {
+        "properties": {
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimedPart"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Claims"
+          },
+          "risk_band": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "elevated",
+                  "high"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Band",
+            "description": "none when the case had no risk check"
+          },
+          "records_conflict": {
+            "type": "boolean",
+            "title": "Records Conflict",
+            "description": "the records contradict each other",
+            "default": false
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "sufficient",
+                  "sufficient_with_uncertainty",
+                  "insufficient_escalate"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict",
+            "description": "the evidence reconciler's verdict, if one ran"
+          }
+        },
+        "type": "object",
+        "title": "EligibilityRequest",
+        "description": "what the investigation concluded; every amount comes from the business's own records, never from here."
+      },
+      "EligibilityResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "order_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Id"
+          },
+          "issue_type": {
+            "type": "string",
+            "enum": [
+              "where_is_my_order",
+              "item_missing_or_wrong",
+              "quality",
+              "cancellation",
+              "refund",
+              "payment_failed",
+              "delivery_partner_behaviour",
+              "offers_coupons"
+            ],
+            "title": "Issue Type"
+          },
+          "rules_version": {
+            "type": "string",
+            "title": "Rules Version"
+          },
+          "risk_band": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "elevated",
+                  "high"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Band"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/EligiblePart"
+            },
+            "type": "array",
+            "title": "Parts"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/ClaimsProfile"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/DailyUsage"
+          },
+          "limits": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            },
+            "type": "object",
+            "title": "Limits"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "case_id",
+          "order_id",
+          "issue_type",
+          "rules_version",
+          "risk_band",
+          "parts",
+          "profile",
+          "usage",
+          "limits"
+        ],
+        "title": "EligibilityResponse"
+      },
+      "EligiblePart": {
+        "properties": {
+          "part": {
+            "type": "string",
+            "title": "Part"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "the order line's name, for a line"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "remedy",
+              "person",
+              "nothing_owed"
+            ],
+            "title": "Outcome"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "refund",
+                  "cancel"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "allowed": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "refund_to_source",
+                "wallet_credit"
+              ]
+            },
+            "type": "array",
+            "title": "Allowed",
+            "description": "the ways a refund may be paid"
+          },
+          "max_amount_paise": {
+            "type": "integer",
+            "title": "Max Amount Paise",
+            "description": "the most a remedy may be; for nothing owed, what was already paid"
+          },
+          "basis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "proven",
+                  "benefit_of_doubt",
+                  "payment_error",
+                  "order_cancelled"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Basis"
+          },
+          "requires": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "human"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requires",
+            "description": "auto: support may do it alone"
+          },
+          "rule": {
+            "type": "string",
+            "title": "Rule"
+          },
+          "why": {
+            "type": "string",
+            "title": "Why"
+          },
+          "policy_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Policy Refs",
+            "description": "policy_id@version of the sections that explain the rule"
+          }
+        },
+        "type": "object",
+        "required": [
+          "part",
+          "name",
+          "outcome",
+          "kind",
+          "allowed",
+          "max_amount_paise",
+          "basis",
+          "requires",
+          "rule",
+          "why",
+          "policy_refs"
+        ],
+        "title": "EligiblePart"
       },
       "GatewayEvent": {
         "properties": {
@@ -3014,6 +4029,77 @@
         ],
         "title": "OrderSummary"
       },
+      "OutcomeRecorded": {
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "decision_record_id": {
+            "type": "string",
+            "title": "Decision Record Id"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "replayed": {
+            "type": "boolean",
+            "title": "Replayed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "case_id",
+          "outcome",
+          "decision_record_id",
+          "idempotency_key",
+          "created_at",
+          "replayed"
+        ],
+        "title": "OutcomeRecorded"
+      },
+      "OutcomeRequest": {
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "pattern": "^CASE-[0-9A-F]{12}$",
+            "title": "Case Id",
+            "examples": [
+              "CASE-0123456789AB"
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "to_a_person",
+              "nothing_owed",
+              "already_refunded"
+            ],
+            "title": "Outcome"
+          },
+          "decision": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Decision"
+          }
+        },
+        "type": "object",
+        "required": [
+          "case_id",
+          "outcome"
+        ],
+        "title": "OutcomeRequest"
+      },
       "PartnerNote": {
         "properties": {
           "note_id": {
@@ -3608,6 +4694,203 @@
           "created_at"
         ],
         "title": "Refund"
+      },
+      "RefundInCancel": {
+        "properties": {
+          "refund_id": {
+            "type": "string",
+            "title": "Refund Id"
+          },
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "amount_paise": {
+            "type": "integer",
+            "title": "Amount Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "destination": {
+            "type": "string",
+            "enum": [
+              "source",
+              "wallet"
+            ],
+            "title": "Destination"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "expected_settlement": {
+            "type": "string",
+            "title": "Expected Settlement"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/RefundPart"
+            },
+            "type": "array",
+            "title": "Parts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "refund_id",
+          "order_id",
+          "amount_paise",
+          "destination",
+          "status",
+          "expected_settlement",
+          "parts"
+        ],
+        "title": "RefundInCancel"
+      },
+      "RefundMade": {
+        "properties": {
+          "refund_id": {
+            "type": "string",
+            "title": "Refund Id"
+          },
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "amount_paise": {
+            "type": "integer",
+            "title": "Amount Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "destination": {
+            "type": "string",
+            "enum": [
+              "source",
+              "wallet"
+            ],
+            "title": "Destination"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "expected_settlement": {
+            "type": "string",
+            "title": "Expected Settlement",
+            "description": "when the money reaches the customer, in words"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/RefundPart"
+            },
+            "type": "array",
+            "title": "Parts"
+          },
+          "decision_record_id": {
+            "type": "string",
+            "title": "Decision Record Id"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "rules_version": {
+            "type": "string",
+            "title": "Rules Version"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "replayed": {
+            "type": "boolean",
+            "title": "Replayed",
+            "description": "true when this key was seen before: the stored answer, nothing done again"
+          }
+        },
+        "type": "object",
+        "required": [
+          "refund_id",
+          "case_id",
+          "order_id",
+          "amount_paise",
+          "destination",
+          "status",
+          "expected_settlement",
+          "parts",
+          "decision_record_id",
+          "idempotency_key",
+          "rules_version",
+          "created_at",
+          "replayed"
+        ],
+        "title": "RefundMade"
+      },
+      "RefundPart": {
+        "properties": {
+          "part": {
+            "type": "string",
+            "title": "Part"
+          },
+          "amount_paise": {
+            "type": "integer",
+            "title": "Amount Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "basis": {
+            "type": "string",
+            "title": "Basis"
+          }
+        },
+        "type": "object",
+        "required": [
+          "part",
+          "amount_paise",
+          "basis"
+        ],
+        "title": "RefundPart"
+      },
+      "RefundRequest": {
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "pattern": "^CASE-[0-9A-F]{12}$",
+            "title": "Case Id",
+            "examples": [
+              "CASE-0123456789AB"
+            ]
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/ActionPart"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Parts"
+          },
+          "eligibility": {
+            "$ref": "#/components/schemas/EligibilityRequest",
+            "description": "the same inputs the eligibility answer came from; the gateway runs the rules again on them"
+          },
+          "decision": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Decision",
+            "description": "hivemind's decision record for this action; the gateway adds the actions and keeps it"
+          }
+        },
+        "type": "object",
+        "required": [
+          "case_id",
+          "parts",
+          "eligibility"
+        ],
+        "title": "RefundRequest"
       },
       "RefundsResponse": {
         "properties": {
