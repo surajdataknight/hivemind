@@ -94,6 +94,49 @@ def test_parts_with_no_common_way_to_pay_go_to_a_person():
     assert approval_router.route(a, sheet(), False) == ("person", ["no one way to pay every part"])
 
 
+def note(type_, label, fid="n1"):
+    if type_ == "delivery.partner_note":
+        return finding(type_, {"note_id": "PN-000001", "label": label, "at": "x"}, fid)
+    return finding(type_, {"incident_id": "INC-000001", "type": "out_of_stock", "sku": None, "note_label": label}, fid)
+
+
+PARTNER_SAYS = "a delivery partner's note gives instructions (PN-000001)"
+STORE_SAYS = "a store incident note gives instructions (INC-000001)"
+
+
+@pytest.mark.parametrize("a", [
+    answer(part(basis="benefit_of_doubt", allowed=["wallet_credit"])),  # s25: was paid ₹149 on benefit of doubt
+    answer(part()),                                                      # proven, low risk, small
+    answer(part(outcome="nothing_owed", rule="payment.not_shown")),
+])
+def test_a_note_giving_instructions_sends_the_whole_case_to_a_person_whatever_the_rules_allow(a):
+    assert approval_router.route(a, sheet(), False, "wallet", [note("delivery.partner_note",
+                                                                    "note_gives_instructions")]) == (
+        "person", [PARTNER_SAYS])
+
+
+def test_a_store_note_giving_instructions_counts_too_and_each_note_is_named_once():
+    board = [note("store.incident", "note_gives_instructions"), note("delivery.partner_note",
+                                                                     "note_gives_instructions", "n2"),
+             note("delivery.partner_note", "note_gives_instructions", "n3")]  # the same note read twice
+    route, why = approval_router.route(answer(part()), sheet(), False, None, board)
+    assert (route, why) == ("person", [STORE_SAYS, PARTNER_SAYS])
+
+
+def test_the_note_reason_comes_first_and_the_parts_reasons_are_kept():
+    a = answer(part(), part("line:2", outcome="person", why="risk_not_low"))
+    route, why = approval_router.route(a, sheet(), False, None, [note("delivery.partner_note",
+                                                                       "note_gives_instructions")])
+    assert (route, why) == ("person", [PARTNER_SAYS, "line:2: risk_not_low"])
+
+
+@pytest.mark.parametrize("label", ["none", "unreadable", "note_mentions_missing_item",
+                                   "note_mentions_handover_to_someone_else"])
+def test_other_note_labels_change_nothing(label):
+    board = [note("delivery.partner_note", label), note("store.incident", label, "n2")]
+    assert approval_router.route(answer(part()), sheet(), False, None, board)[0] == "auto"
+
+
 # c18, hivemind's side
 
 

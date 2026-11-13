@@ -6,18 +6,21 @@ unknown), records that contradict each other, or a message with several issues. 
 records show (charged twice, a failed payment that took money) is the business's mistake and is always put right.
 money proven owed and benefit of doubt (wallet only) in one case are paid alone only when the customer
 asked for the wallet: otherwise the owed money would go to the wallet unasked, and a person decides.
+a note from a delivery partner or the store that the quarantined reader labelled as giving instructions sends the
+whole case to a person, whatever the rules allow (blueprint t1, t2): someone tried to steer this case, so nothing is
+paid on it alone, benefit of doubt least of all. the note's words still reach nothing; only its id is named.
 """
 
-from hivemind_agents.contracts import FactSheet
+from hivemind_agents.contracts import FactSheet, Finding
 
 CLAIM_BASES = ("proven", "benefit_of_doubt")
 
 
-def route(answer: dict, sheet: FactSheet | None, several_issues: bool,
-          money_to: str | None = None) -> tuple[str, list[str]]:
+def route(answer: dict, sheet: FactSheet | None, several_issues: bool, money_to: str | None = None,
+          board: list[Finding] | None = None) -> tuple[str, list[str]]:
     """(auto | person | nothing_owed | already_refunded, why)."""
     parts = answer["parts"]
-    person = [f"{p['part']}: {p['why']}" for p in parts if p["outcome"] == "person"]
+    person = steering_notes(board or []) + [f"{p['part']}: {p['why']}" for p in parts if p["outcome"] == "person"]
     if person:
         return "person", person
     remedies = [p for p in parts if p["outcome"] == "remedy"]
@@ -54,3 +57,18 @@ def ways(remedies: list[dict]) -> list[str]:
     """the ways of paying allowed for every part, in the rules' order."""
     allowed = [w for w in remedies[0]["allowed"] if all(w in p["allowed"] for p in remedies)]
     return allowed
+
+
+def steering_notes(board: list[Finding]) -> list[str]:
+    """one reason per note on the case's board labelled as giving instructions, named by its id only."""
+    why: list[str] = []
+    for f in board:
+        if f.type == "delivery.partner_note" and f.facts.get("label") == "note_gives_instructions":
+            reason = f"a delivery partner's note gives instructions ({f.facts.get('note_id')})"
+        elif f.type == "store.incident" and f.facts.get("note_label") == "note_gives_instructions":
+            reason = f"a store incident note gives instructions ({f.facts.get('incident_id')})"
+        else:
+            continue
+        if reason not in why:
+            why.append(reason)
+    return why

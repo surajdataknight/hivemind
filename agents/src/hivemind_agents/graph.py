@@ -558,7 +558,7 @@ def decide_node(state: RunState, runtime: Run) -> dict:
         span.set_attribute("hivemind.rules_version", answer["rules_version"])
         set_output(span, answer)
     with ctx.tracer.capability("approval_router") as span:
-        route, why = approval_router.route(answer, sheet, several, issue.money_to)
+        route, why = approval_router.route(answer, sheet, several, issue.money_to, board_now)
         span.set_attribute("hivemind.route", route)
         set_output(span, why)
     proposal = None

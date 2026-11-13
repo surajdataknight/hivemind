@@ -157,7 +157,8 @@ def cross_checks(board: list[Finding]) -> list[dict]:
                          "finding_ids": [f.finding_id], "detail": f.claim})
         if f.type == "delivery.partner_note" and f.facts.get("label") == "note_gives_instructions":
             rows.append({"about": "a partner note", "signal": "note_gives_instructions", "direction": "ignored",
-                         "finding_ids": [f.finding_id], "detail": "the note asks for something; it counts for nothing"})
+                         "finding_ids": [f.finding_id],
+                         "detail": "the note asks for something; its words count for nothing, and a person decides"})
     return rows
 
 
