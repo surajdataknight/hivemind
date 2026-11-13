@@ -12,7 +12,7 @@ import pytest
 
 from hivemind_agents import replies
 from hivemind_agents.wording import clock, rupees
-from scripted import draft, issue
+from scripted import NO_EXTRA_CHECKS, draft, issue, side_calls
 
 pytestmark = [pytest.mark.db, pytest.mark.live_capable]
 
@@ -258,8 +258,10 @@ def test_21_missing_item_waits_for_a_person(chat_as, data, model, cases, live):
     fault = data.fault("missing_item", "store_miss")
     model.intakes.append(draft(issues=[issue("item_missing_or_wrong", order_id=fault["order_id"],
                                              items=["butter"])], sentiment="negative"))
+    model.intakes.append(NO_EXTRA_CHECKS)  # the case lead: the minimum checks are enough
     done = chat_as(fault["customer_id"]).say(f"Butter was missing from my order {fault['order_id']}. Refund please.")
-    check(done, "waiting_for_person", calls=1, state="AWAITING_HUMAN", live=live,
+    # the intake, the case lead, and one quarantined reading per partner or store note near the order
+    check(done, "waiting_for_person", calls=2 + side_calls(model), state="AWAITING_HUMAN", live=live,
           has=("a missing or wrong item", "person"), lacks=NO_PROMISES)
     (case,) = cases()
     assert (case["issue_type"], case["order_id"], case["state"]) == (
@@ -301,9 +303,10 @@ def test_25_two_problems_in_one_message_two_cases_one_reply(chat_as, data, model
     last_delivered = next(p for p in data.by_customer[order["customer_id"]] if p["status"] == "DELIVERED")
     model.intakes.append(draft(issues=[issue("item_missing_or_wrong", items=["bread"], latest=True),
                                        issue("where_is_my_order")]))
+    model.intakes.append(NO_EXTRA_CHECKS)
     chat = chat_as(order["customer_id"])
     done = chat.say("My last delivered order had no bread in it, and also where is my order today? It hasn't come yet.")
-    text = check(done, "several", calls=1, live=live, has=("a missing or wrong item", order["order_id"], "on its way"))
+    text = check(done, "several", calls=2 + side_calls(model), live=live, has=("a missing or wrong item", order["order_id"], "on its way"))
     first, second = text.split(replies.PART_BREAK)
     assert first == replies.waiting_for_person("item_missing_or_wrong") and order["order_id"] in second
     assert " ".join(chat.streamed_text().split()) == " ".join(text.split())  # shown in the same order, as it came
@@ -419,7 +422,96 @@ def test_30_a_missing_item_with_no_order_said_asks_which_delivered_order(chat_as
     assert cases() == []
     chips = done["message"]["chips"]
     assert [c["text"] for c in chips] == delivered  # only the orders a missing item can be on
+    model.intakes.append(NO_EXTRA_CHECKS)
+    labels = side_calls(model)
     done = chat.press(chips[-1])
-    check(done, "waiting_for_person", calls=0, state="AWAITING_HUMAN", has=("a missing or wrong item",))
+    check(done, "waiting_for_person", calls=1 + side_calls(model) - labels, state="AWAITING_HUMAN",
+          has=("a missing or wrong item",))
     (case,) = cases()
     assert (case["issue_type"], case["order_id"]) == ("item_missing_or_wrong", delivered[-1])
+
+
+def test_31_an_order_named_by_a_day_is_picked_by_code(chat_as, data, model, cases, live):
+    """"yesterday's order": the model only writes the day; code picks the one delivered order of that day, on the
+    business's clock in india, so no question is asked."""
+    from datetime import timedelta
+
+    from hivemind_agents.wording import IST
+    from hivemind_datagen.generate import SMALL
+
+    yesterday = (SMALL.as_of.astimezone(IST) - timedelta(days=1)).date()
+
+    def days(o):
+        return {at.astimezone(IST).date() for at in (o["placed_at"], o.get("delivered_at")) if at is not None}
+
+    def fits(orders):
+        delivered = [o for o in orders[:5] if o["status"] in ("DELIVERED", "PARTIALLY_FULFILLED")]
+        return len(delivered) >= 2 and sum(yesterday in days(o) for o in delivered) == 1
+
+    customer = next(c for c, orders in sorted(data.by_customer.items()) if fits(orders))
+    wanted = next(o["order_id"] for o in data.by_customer[customer][:5]
+                  if o["status"] in ("DELIVERED", "PARTIALLY_FULFILLED") and yesterday in days(o))
+    model.intakes.append(draft(issues=[issue("item_missing_or_wrong", items=["bread"], day="yesterday")],
+                               sentiment="negative"))
+    model.intakes.append(NO_EXTRA_CHECKS)
+    done = chat_as(customer).say("The bread was missing from yesterday's order")
+    check(done, "waiting_for_person", calls=2 + side_calls(model), state="AWAITING_HUMAN", live=live,
+          has=("a missing or wrong item",))
+    (case,) = cases()
+    assert case["order_id"] == wanted
+
+
+def _line_names(data, order_id):
+    rows = sorted((r for r in data.t["orders.order_lines"] if r["order_id"] == order_id), key=lambda r: r["line_no"])
+    return list(dict.fromkeys(r["name"] for r in rows))
+
+
+def test_32_a_missing_item_with_no_item_said_asks_which_item(chat_as, data, model, cases, live):
+    """the order is known but no item was named: HiveMind asks which, with a button per line of the order, and
+    the case is worked on the item pressed; no case is opened before the answer."""
+    fault = data.fault("missing_item", "store_miss")
+    names = _line_names(data, fault["order_id"])
+    model.intakes.append(draft(issues=[issue("item_missing_or_wrong", order_id=fault["order_id"])],
+                               sentiment="negative"))
+    chat = chat_as(fault["customer_id"])
+    done = chat.say(f"Something was missing from my order {fault['order_id']}")
+    check(done, "ask_items", calls=1, live=live, has=("Which item was missing or wrong", fault["order_id"]))
+    assert cases() == []
+    chips = done["message"]["chips"]
+    assert [c["text"] for c in chips] == names[:12]
+    assert all(c["intent"]["items"] == [c["text"]] for c in chips)
+    model.intakes.append(NO_EXTRA_CHECKS)
+    labels = side_calls(model)
+    done = chat.press(chips[0])
+    check(done, "waiting_for_person", calls=1 + side_calls(model) - labels, state="AWAITING_HUMAN",
+          has=("a missing or wrong item",))
+    (case,) = cases()
+    assert (case["issue_type"], case["order_id"]) == ("item_missing_or_wrong", fault["order_id"])
+    assert chat.stored()[-1]["meta"]["intake"]["issues"][0]["items_mentioned"] == [chips[0]["text"]]
+
+
+def test_33_an_answer_that_is_not_clean_gets_the_question_once_more_then_is_read_as_new(chat_as, data, model,
+                                                                                          cases, live):
+    """not an answer: the same question again, no model asked; not an answer again: the message is read as a new
+    one, and the unanswered problem is asked about again after it, so nothing is dropped."""
+    fault = data.fault("missing_item", "store_miss")
+    model.intakes.append(draft(issues=[issue("item_missing_or_wrong", order_id=fault["order_id"])]))
+    chat = chat_as(fault["customer_id"])
+    asked = chat.say(f"An item was missing from {fault['order_id']}")
+    check(asked, "ask_items", calls=1, live=live)
+
+    again = chat.say("hmm I don't remember exactly")
+    text = check(again, "ask_again", calls=0, has=("couldn't tell", "Which item was missing or wrong"))
+    assert [c["text"] for c in again["message"]["chips"]] == [c["text"] for c in asked["message"]["chips"]]
+    assert chat.stored()[-1]["meta"]["pending"]["asked_again"] is True and cases() == []
+
+    third = chat.say("thanks")  # small talk, read by the rules: its reply, then the question once more
+    text = check(third, "thanks", calls=0)
+    assert text.startswith(replies.THANKS) and text.endswith(chat.stored()[-1]["meta"]["pending"]["question"])
+    assert third["message"]["chips"] and cases() == []
+
+    model.intakes.append(NO_EXTRA_CHECKS)
+    done = chat.say("the " + third["message"]["chips"][0]["text"])  # a clean typed answer at last
+    check(done, "waiting_for_person", state="AWAITING_HUMAN", has=("a missing or wrong item",))
+    (case,) = cases()
+    assert case["order_id"] == fault["order_id"]

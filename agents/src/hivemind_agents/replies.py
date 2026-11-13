@@ -83,6 +83,27 @@ def which_coupon(order_id: str) -> str:
     return f"Which coupon code did you use on order {order_id}? Please type the code."
 
 
+ITEM_QUESTIONS = {
+    "item_missing_or_wrong": "Which item was missing or wrong",
+    "quality": "Which item had the problem",
+}
+
+
+def which_item(case_type: str, order_id: str) -> str:
+    return (f"{ITEM_QUESTIONS[case_type]} in order {order_id}? Tap it below, or type the names if there was more "
+            "than one.")
+
+
+def ask_again(question: str) -> str:
+    """our question once more, when the customer's message did not answer it."""
+    return f"Sorry, I couldn't tell the answer from that. {question}"
+
+
+def item_chips(case_type: str, order_id: str, names: list[str]) -> list[Chip]:
+    return [Chip(label=name, text=name, intent=IntentHint(case_type=case_type, order_id=order_id, items=[name]))
+            for name in names]
+
+
 def order_chips(case_type: str, orders: list[OrderRef], now: datetime, coupon_code: str | None = None) -> list[Chip]:
     return [Chip(label=f"{o.order_id} · {when(o.placed_at, now)} · {STATUS_LABELS.get(o.status, o.status)}",
                  text=o.order_id,

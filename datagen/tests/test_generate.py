@@ -256,3 +256,85 @@ def test_conflicting_records(t, idx):
                 and i["type"] == "out_of_stock" and picked["at"] - timedelta(minutes=10) <= i["at"] < picked["at"]]
         assert f["expected"]["proven_by_records"] is False
         assert (f["expected"]["owed_paise"] > 0) == (f["variant"] == "item_missing")
+
+
+# fraud rings and earlier claims (phase 2.4)
+
+
+def test_fraud_rings_share_their_link(t):
+    rings = t["truth.fraud_rings"]
+    assert {r["link_type"] for r in rings} == {"device", "address", "upi"}
+    members = [m for r in rings for m in r["members"]]
+    assert len(members) == len(set(members)) == SMALL.fraud_rings * SMALL.ring_size
+    for ring in rings:
+        if ring["link_type"] == "device":
+            devices = {s["device_id"] for s in t["identity.sessions"] if s["customer_id"] in ring["members"]}
+            assert devices == {ring["shared"]}
+        elif ring["link_type"] == "address":
+            home = next(a for a in t["customer.addresses"] if a["address_id"] == ring["shared"])
+            for member in ring["members"]:
+                assert [a for a in t["customer.addresses"] if a["customer_id"] == member
+                        and (a["line1"], a["pincode"], a["lat"], a["lng"]) ==
+                        (home["line1"], home["pincode"], home["lat"], home["lng"])]
+        else:
+            for member in ring["members"]:
+                refs = {i["instrument_ref"] for i in t["payments.payment_intents"]
+                        if i["customer_id"] == member and i["method"] == "upi"}
+                assert refs == {ring["shared"]}
+    # no account outside a ring shares its link
+    outside = [s for s in t["identity.sessions"] if s["customer_id"] not in members]
+    assert len({s["device_id"] for s in outside}) == len(outside)
+
+
+def test_past_claims_are_closed_legal_and_never_on_a_faulty_order(t, idx):
+    from hivemind_backend.cases import can_move
+
+    faulty = {f["order_id"] for f in t["truth.order_faults"]}
+    events = defaultdict(list)
+    for e in t["support.case_events"]:
+        events[e["case_id"]].append(e)
+    assert t["support.cases"]
+    for case in t["support.cases"]:
+        order = idx["order"][case["order_id"]]
+        assert case["order_id"] not in faulty
+        assert order["customer_id"] == case["customer_id"] and order["status"] == "DELIVERED"
+        assert case["state"] == "CLOSED" and order["delivered_at"] < case["created_at"] <= case["updated_at"]
+        history = sorted(events[case["case_id"]], key=lambda e: e["seq"])
+        assert history[0]["type"] == "opened" and history[-1]["to_state"] == "CLOSED"
+        for before, after in zip(history, history[1:]):
+            assert can_move(before["to_state"], after["to_state"]) and before["at"] <= after["at"]
+            assert after["from_state"] == before["to_state"]
+    claim_refunds = [r for r in t["refunds_wallet.refunds"] if r["case_id"]]
+    assert claim_refunds and {r["case_id"] for r in claim_refunds} <= {c["case_id"] for c in t["support.cases"]}
+    tickets = t["support.tickets"]
+    assert {k["status"] for k in tickets} <= {"APPROVED", "REJECTED"}
+
+
+def test_ring_members_claim_far_more_often(t):
+    ring = {m for r in t["truth.fraud_rings"] for m in r["members"]}
+    claims = defaultdict(int)
+    for case in t["support.cases"]:
+        claims[case["customer_id"]] += 1
+    delivered = defaultdict(int)
+    for order in t["orders.orders"]:
+        if order["status"] == "DELIVERED":
+            delivered[order["customer_id"]] += 1
+    for member in ring:
+        assert claims[member] / delivered[member] >= 0.3
+    others = [c for c in delivered if c not in ring]
+    assert sum(claims[c] for c in others) / sum(delivered[c] for c in others) < 0.1
+
+
+def test_ring_false_claim_and_injected_note(t, idx):
+    ring = {m: r["ring_id"] for r in t["truth.fraud_rings"] for m in r["members"]}
+    for f in faults_of(t, "fraud_ring", "false_claim"):
+        rows = idx["rows"][f["order_id"]]
+        assert f["customer_id"] in ring and f["facts"]["ring_id"] == ring[f["customer_id"]]
+        (pod,) = rows["delivery.pod"]
+        bags = {s["bag"] for s in rows["store_inventory.pick_pack_scans"] if s["event"] == "packed"}
+        assert pod["otp_verified"] and pod["bags_handed"] == len(bags)
+        assert f["expected"] == {"owed_paise": 0, "proven_by_records": False}
+    for f in faults_of(t, "injected_note", "partner_note"):
+        notes = idx["rows"][f["order_id"]]["delivery.partner_notes"]
+        assert any(n["note_id"] == f["facts"]["note_id"] for n in notes)
+        assert f["customer_id"] not in ring  # an unproven claim never lands on a ring member by chance

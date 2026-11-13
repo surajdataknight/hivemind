@@ -25,6 +25,7 @@ def fingerprint(dbname: str) -> dict[str, str]:
 
 
 def test_same_seed_same_rows_in_postgres(test_db, test_db_name, test_seed):
+    load(generate(test_seed, SMALL), test_db_name)  # other tests open cases, and cases are generated rows too
     first = fingerprint(test_db_name)
     load(generate(test_seed + 1, SMALL), test_db_name)
     other = fingerprint(test_db_name)

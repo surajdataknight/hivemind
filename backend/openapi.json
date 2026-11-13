@@ -3,7 +3,7 @@
   "info": {
     "title": "HiveMind simulated business",
     "description": "apis of the simulated quick-commerce grocery business. money is integer paise; times are rfc 3339 utc; errors are rfc 9457 problem details. every read carries an evidence_id. every api except the fake sign-in needs a case token (`Authorization: Bearer ...`); the customer comes from that token, never from the url.",
-    "version": "0.3.0"
+    "version": "0.5.0"
   },
   "paths": {
     "/v1/clock": {
@@ -1196,6 +1196,192 @@
         }
       }
     },
+    "/v1/me/support-profile": {
+      "get": {
+        "tags": [
+          "support"
+        ],
+        "summary": "the token's customer's orders and earlier claims in a window, counted",
+        "operationId": "getSupportProfile",
+        "parameters": [
+          {
+            "name": "window_days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 365,
+              "minimum": 1,
+              "description": "days back from the business's clock",
+              "default": 180,
+              "title": "Window Days"
+            },
+            "description": "days back from the business's clock"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupportProfileResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/me/risk-signals": {
+      "get": {
+        "tags": [
+          "risk"
+        ],
+        "summary": "how many other accounts share a device, an address or a upi id with the token's customer",
+        "operationId": "getRiskSignals",
+        "parameters": [
+          {
+            "name": "window_days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 365,
+              "minimum": 1,
+              "description": "days back from the business's clock",
+              "default": 180,
+              "title": "Window Days"
+            },
+            "description": "days back from the business's clock"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RiskSignalsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
     "/v1/promotions/offers/{code}": {
       "get": {
         "tags": [
@@ -1437,6 +1623,104 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PromotionEvaluationResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/policy/sections": {
+      "get": {
+        "tags": [
+          "policy"
+        ],
+        "summary": "the active policy and sop sections for one issue type, whole",
+        "operationId": "listPolicySections",
+        "parameters": [
+          {
+            "name": "issue_type",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "where_is_my_order",
+                "item_missing_or_wrong",
+                "quality",
+                "cancellation",
+                "refund",
+                "payment_failed",
+                "delivery_partner_behaviour",
+                "offers_coupons"
+              ],
+              "type": "string",
+              "title": "Issue Type"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyResponse"
                 }
               }
             }
@@ -1905,6 +2189,29 @@
         ],
         "title": "Checkout"
       },
+      "ClaimCounts": {
+        "properties": {
+          "item_missing_or_wrong": {
+            "type": "integer",
+            "title": "Item Missing Or Wrong"
+          },
+          "quality": {
+            "type": "integer",
+            "title": "Quality"
+          },
+          "refund": {
+            "type": "integer",
+            "title": "Refund"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_missing_or_wrong",
+          "quality",
+          "refund"
+        ],
+        "title": "ClaimCounts"
+      },
       "ClockResponse": {
         "properties": {
           "evidence_id": {
@@ -2094,6 +2401,42 @@
           "incidents"
         ],
         "title": "IncidentsResponse"
+      },
+      "LinkedAccounts": {
+        "properties": {
+          "link_type": {
+            "type": "string",
+            "enum": [
+              "device",
+              "address",
+              "upi"
+            ],
+            "title": "Link Type"
+          },
+          "accounts": {
+            "type": "integer",
+            "title": "Accounts",
+            "description": "other accounts sharing it"
+          },
+          "accounts_with_claims": {
+            "type": "integer",
+            "title": "Accounts With Claims",
+            "description": "of those, the accounts with a claim in the window"
+          },
+          "claims": {
+            "type": "integer",
+            "title": "Claims",
+            "description": "their claims in the window, together"
+          }
+        },
+        "type": "object",
+        "required": [
+          "link_type",
+          "accounts",
+          "accounts_with_claims",
+          "claims"
+        ],
+        "title": "LinkedAccounts"
       },
       "MeResponse": {
         "properties": {
@@ -2728,6 +3071,46 @@
         ],
         "title": "PartnerNotesResponse"
       },
+      "PastResolution": {
+        "properties": {
+          "issue_type": {
+            "type": "string",
+            "enum": [
+              "item_missing_or_wrong",
+              "quality",
+              "refund"
+            ],
+            "title": "Issue Type"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "refunded",
+              "turned_down",
+              "decided_by_person"
+            ],
+            "title": "Outcome"
+          },
+          "refunded_paise": {
+            "type": "integer",
+            "title": "Refunded Paise",
+            "description": "money in integer paise (1 rupee = 100 paise)"
+          },
+          "closed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Closed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "issue_type",
+          "outcome",
+          "refunded_paise",
+          "closed_at"
+        ],
+        "title": "PastResolution"
+      },
       "PaymentIntent": {
         "properties": {
           "intent_id": {
@@ -2820,6 +3203,73 @@
           "intents"
         ],
         "title": "PaymentsResponse"
+      },
+      "PolicyResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "issue_type": {
+            "type": "string",
+            "enum": [
+              "where_is_my_order",
+              "item_missing_or_wrong",
+              "quality",
+              "cancellation",
+              "refund",
+              "payment_failed",
+              "delivery_partner_behaviour",
+              "offers_coupons"
+            ],
+            "title": "Issue Type"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/PolicySection"
+            },
+            "type": "array",
+            "title": "Sections",
+            "description": "the active sections for this issue type, whole"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "issue_type",
+          "sections"
+        ],
+        "title": "PolicyResponse"
+      },
+      "PolicySection": {
+        "properties": {
+          "policy_id": {
+            "type": "string",
+            "title": "Policy Id"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version",
+            "description": "the first 8 hex characters of the sha-256 of the text"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          }
+        },
+        "type": "object",
+        "required": [
+          "policy_id",
+          "version",
+          "title",
+          "body"
+        ],
+        "title": "PolicySection"
       },
       "Problem": {
         "properties": {
@@ -3186,6 +3636,50 @@
         ],
         "title": "RefundsResponse"
       },
+      "RiskSignalsResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "window_days": {
+            "type": "integer",
+            "title": "Window Days"
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Since"
+          },
+          "account_age_days": {
+            "type": "integer",
+            "title": "Account Age Days"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/LinkedAccounts"
+            },
+            "type": "array",
+            "title": "Links",
+            "description": "one row per kind of link, always all three"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "customer_id",
+          "window_days",
+          "since",
+          "account_age_days",
+          "links"
+        ],
+        "title": "RiskSignalsResponse"
+      },
       "Scan": {
         "properties": {
           "scan_id": {
@@ -3478,6 +3972,117 @@
           "events"
         ],
         "title": "StockEventsResponse"
+      },
+      "SupportProfileResponse": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "description": "ev_ + the first 32 hex characters of the sha-256 of the body without this field"
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "window_days": {
+            "type": "integer",
+            "title": "Window Days"
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Since"
+          },
+          "account_age_days": {
+            "type": "integer",
+            "title": "Account Age Days"
+          },
+          "orders": {
+            "type": "integer",
+            "title": "Orders",
+            "description": "orders placed in the window"
+          },
+          "delivered_orders": {
+            "type": "integer",
+            "title": "Delivered Orders",
+            "description": "orders delivered in the window"
+          },
+          "claims": {
+            "type": "integer",
+            "title": "Claims",
+            "description": "closed or resolved claim cases (missing or wrong item, quality, refund) opened in the window"
+          },
+          "claims_last_30_days": {
+            "type": "integer",
+            "title": "Claims Last 30 Days"
+          },
+          "claims_by_type": {
+            "$ref": "#/components/schemas/ClaimCounts"
+          },
+          "refunded_by_rules": {
+            "type": "integer",
+            "title": "Refunded By Rules",
+            "description": "claims refunded without a person"
+          },
+          "turned_down": {
+            "type": "integer",
+            "title": "Turned Down",
+            "description": "claims closed with no refund and no person"
+          },
+          "escalated": {
+            "type": "integer",
+            "title": "Escalated",
+            "description": "claims a person decided on a ticket"
+          },
+          "escalations_approved": {
+            "type": "integer",
+            "title": "Escalations Approved"
+          },
+          "escalations_rejected": {
+            "type": "integer",
+            "title": "Escalations Rejected"
+          },
+          "refunded_paise": {
+            "type": "integer",
+            "title": "Refunded Paise",
+            "description": "money refunded for the window's claims"
+          },
+          "open_cases": {
+            "type": "integer",
+            "title": "Open Cases",
+            "description": "the customer's cases still open now, of any type, this one included"
+          },
+          "last_resolutions": {
+            "items": {
+              "$ref": "#/components/schemas/PastResolution"
+            },
+            "type": "array",
+            "title": "Last Resolutions",
+            "description": "the last 3 closed claims, newest first"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "customer_id",
+          "window_days",
+          "since",
+          "account_age_days",
+          "orders",
+          "delivered_orders",
+          "claims",
+          "claims_last_30_days",
+          "claims_by_type",
+          "refunded_by_rules",
+          "turned_down",
+          "escalated",
+          "escalations_approved",
+          "escalations_rejected",
+          "refunded_paise",
+          "open_cases",
+          "last_resolutions"
+        ],
+        "title": "SupportProfileResponse"
       },
       "TripResponse": {
         "properties": {

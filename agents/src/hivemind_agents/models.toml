@@ -5,6 +5,10 @@
 # google ai studio, free tier; the key is read from this environment variable
 key_env = "GEMINI_API_KEY"
 
+[providers.groq]
+# groq, free plan (record 013); no training on inputs or outputs, zero data retention switched on in its console
+key_env = "GROQ_API_KEY"
+
 [jobs.intake]
 provider = "google"
 model = "gemini-3.5-flash-lite"
@@ -14,3 +18,68 @@ temperature = 0.0
 provider = "google"
 model = "gemini-3.5-flash-lite"
 temperature = 0.3
+
+[jobs.quarantined_reader]
+# reads one free-text note from a delivery partner or a dark store, with no tools, into one fixed label (013)
+provider = "google"
+model = "gemini-3.5-flash-lite"
+temperature = 0.0
+# inside a check's 8 s: one try, no retry after a timeout; an unread note is labelled unreadable
+timeout_s = 6
+retry_timeouts = false
+total_s = 6
+
+[jobs.case_lead]
+# groq gpt-oss-120b since 2026-11-13 (record 013): 27 of 27 plans and 7/7 three times in the case-lead test;
+# gemini-3.8-flash gave none (timeouts, then its 20 requests a day). 8,000 tokens a minute, and its daily tokens are
+# shared with the independent reviewer
+provider = "groq"
+model = "openai/gpt-oss-120b"
+temperature = 0.0
+# seconds per model call (other jobs: 20); a whole plan takes longer than a short reply
+timeout_s = 45
+# a timeout is not tried again: the minimum plan runs at once and the checks keep their time
+retry_timeouts = false
+# all tries together, waits included, never past this: the case's 60 s clock keeps 15 s for the checks
+total_s = 45
+# when the model says it is busy (or its quota is used up), the next try goes at once to this one, within the 45 s
+# (record 013); not after a timeout, when no time is left. the plan's note says so. another provider, so a busy
+# spell at groq does not reach it; 27 of 27 plans in the case-lead test too.
+fallback_provider = "google"
+fallback = "gemini-3.5-flash-lite"
+
+[jobs.reconciler]
+# c17: reads the case board once the checks are done into a fact sheet and a verdict (013: a light job)
+provider = "google"
+model = "gemini-3.5-flash-lite"
+temperature = 0.0
+# all tries together; no answer in time: the sheet is made by code and the case goes to a person
+total_s = 20
+
+[jobs.reconciler_complex]
+# c17 for a message with more than one issue: more to weigh, the case lead's model (013); busy: the same fallback
+provider = "groq"
+model = "openai/gpt-oss-120b"
+temperature = 0.0
+total_s = 20
+fallback_provider = "google"
+fallback = "gemini-3.5-flash-lite"
+
+# evaluation only (record 014): never used by hivemind itself
+
+[jobs.simulated_customer]
+# plays a customer with a persona and a secret goal (record 013, 2026-11-13: groq, after google answered gemma 4
+# busy so often that one small-set run took over an hour)
+provider = "groq"
+model = "openai/gpt-oss-20b"
+temperature = 0.7
+# no customer is kept waiting, so the evaluation waits longer when the provider is busy
+busy_waits = [5, 15, 30, 60]
+
+[jobs.baseline_agent]
+# the single-agent baseline of blueprint part b.6: the case lead's model, so the comparison is about the shape
+provider = "groq"
+model = "openai/gpt-oss-120b"
+temperature = 0.0
+# evaluation only: no customer waits, so a per-minute limit is waited out (groq gpt-oss-120b: 8,000 tokens a minute)
+busy_waits = [10, 30, 60]

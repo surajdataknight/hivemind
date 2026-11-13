@@ -57,3 +57,23 @@ def test_db_name() -> str:
 @pytest.fixture(scope="session")
 def test_seed() -> int:
     return TEST_SEED
+
+
+# the cases a test opened: hivemind opens a case at the business's clock; the generated earlier claims are older
+MADE_IN_TESTS = "select case_id from support.cases where created_at >= (select now from public.sim_clock)"
+
+
+@pytest.fixture
+def clean_chat_state(test_db, test_db_name):
+    """no cases or chats left over from another test. the generated earlier claims stay: they are the customers'
+    history."""
+    from hivemind_backend import db
+
+    with db.connect("admin", dbname=test_db_name) as conn:
+        conn.execute(f"delete from support.ticket_events where ticket_id in (select ticket_id from support.tickets "
+                     f"where case_id in ({MADE_IN_TESTS}))")
+        for table in ("support.tickets", "support.decision_records", "support.case_events"):
+            conn.execute(f"delete from {table} where case_id in ({MADE_IN_TESTS})")
+        conn.execute(f"delete from support.cases where case_id in ({MADE_IN_TESTS})")
+        conn.execute("truncate agent.pii_vault, agent.messages, agent.conversations, agent.case_leases, "
+                     "agent.evidence_ledger, agent.findings, agent.case_plans, agent.fact_sheets")

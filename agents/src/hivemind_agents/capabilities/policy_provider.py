@@ -1,7 +1,8 @@
-"""c16 policy knowledge provider, first version: looks up the policy sections for a case type and hands them over
-whole. no search: the case type decides which sections. so far it knows one: an offer's terms, by its code.
+"""c16 policy knowledge provider: hands over the active policy and sop sections for a case type, whole. no search:
+the case type decides which sections (the business's `policy.map`). coupons keep their own terms, by offer code.
 
-each section carries policy_id@version; the version is a hash of the text, so a changed text is a new version.
+each section carries policy_id@version; the version is the hash of its text (the business checks that), so a changed
+text is a new version. the sections come from one read, so one evidence id covers them all.
 """
 
 import hashlib
@@ -20,7 +21,13 @@ def offer_terms(code: str, backend: BackendClient) -> list[PolicySection]:
                           text=offer["terms"], evidence_ref=offer["evidence_id"])]
 
 
+def policy_sections(case_type: str, backend: BackendClient) -> list[PolicySection]:
+    read = backend.policy_sections(case_type)
+    return [PolicySection(policy_id=s["policy_id"], version=s["version"], title=s["title"], text=s["body"],
+                          evidence_ref=read["evidence_id"]) for s in read["sections"]]
+
+
 def sections_for(case_type: str, backend: BackendClient, *, coupon_code: str | None = None) -> list[PolicySection]:
-    if case_type == "offers_coupons" and coupon_code:
-        return offer_terms(coupon_code, backend)
-    return []
+    if case_type == "offers_coupons":
+        return offer_terms(coupon_code, backend) if coupon_code else []
+    return policy_sections(case_type, backend)

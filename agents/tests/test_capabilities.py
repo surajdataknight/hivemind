@@ -6,9 +6,9 @@ from datetime import datetime, timedelta, timezone
 import jwt
 import pytest
 
-from hivemind_agents import settings
+from hivemind_agents import settings, wording
 from hivemind_agents.backend_client import NotFound
-from hivemind_agents.capabilities import intake, order_status, promotions_investigator, triage
+from hivemind_agents.capabilities import intake, items, order_status, promotions_investigator, triage
 from hivemind_agents.capabilities.identity import CASE_AUDIENCE, IdentityVerifier, NotSignedIn
 from hivemind_agents.capabilities.input_guard import PiiVault, guard, luhn_ok
 from hivemind_agents.contracts import IntentHint, Issue, OrderRef, Turn
@@ -96,7 +96,8 @@ def test_identity_accepts_a_good_session_and_mints_a_short_case_token():
     claims = jwt.decode(token, CASE_KEY, algorithms=["HS256"], audience=CASE_AUDIENCE)
     assert claims["sub"] == "CUST-00042" and claims["conv"] == "conv_1" and claims["scopes"] == identity.scopes
     assert 0 < claims["exp"] - claims["iat"] <= 30 * 60
-    assert "payments:read:self" not in identity.scopes  # nothing built so far reads payments
+    assert {"payments:read:self", "inventory:read", "history:read:self", "risk:read"} <= set(identity.scopes)
+    assert "media:read:self" not in identity.scopes  # the media analyst comes in phase 4
 
 
 @pytest.mark.parametrize("token", [
@@ -176,6 +177,94 @@ def test_an_answer_to_our_question_carries_the_case_over():
     assert intake.from_pending(None, "ORD-100123") is None
 
 
+LINES = ["Amul Butter (100 g)", "Amul Taaza Milk (1 l)", "Soya Milk (1 l)", "Fresh Paneer (200 g)", "Brown Bread"]
+
+
+@pytest.mark.parametrize("answer, named", [
+    ("the paneer", ["Fresh Paneer (200 g)"]),
+    ("it was the paneer that never came", ["Fresh Paneer (200 g)"]),
+    ("Paneer and butter", ["Fresh Paneer (200 g)", "Amul Butter (100 g)"]),
+    ("amul milk", ["Amul Taaza Milk (1 l)"]),
+    ("panner, bred", ["Fresh Paneer (200 g)", "Brown Bread"]),  # typos
+    ("Brown Bread", ["Brown Bread"]),  # the button's own words, typed
+    ("milk", None),  # fits two lines equally: not clean
+    ("the eggs", None),  # no such line
+    ("paneer and the eggs", None),  # one part names no line
+    ("no idea", None),
+    ("", None),
+])
+def test_an_answer_to_which_item_names_lines_or_is_not_clean(answer, named):
+    assert items.named_in_answer(answer, LINES) == named
+
+
+ASKS_ITEM = {"asks": "items", "case_type": "item_missing_or_wrong", "order_id": "ORD-100123", "lines": LINES,
+             "queue": [{"case_type": "where_is_my_order", "order_id": None}], "question": "Which item was missing?"}
+
+
+class NoModel:
+    """a model the test does not expect to be asked."""
+
+    def structured(self, *args, **kwargs):
+        raise AssertionError("the model was asked")
+
+
+class OneDraft:
+    def __init__(self, answer):
+        self.answer, self.asked = answer, 0
+
+    def structured(self, job, system, prompt, shape):
+        self.asked += 1
+        return shape.model_validate(self.answer)
+
+
+def test_an_answer_to_which_item_carries_the_case_and_the_waiting_issues_over():
+    typed = intake.intake("the paneer and the butter", None, ASKS_ITEM, [], [], NoModel())
+    assert [(i.case_type, i.order_id, i.items_mentioned) for i in typed.issues] == [
+        ("item_missing_or_wrong", "ORD-100123", ["Fresh Paneer (200 g)", "Amul Butter (100 g)"]),
+        ("where_is_my_order", None, [])]
+    hint = IntentHint(case_type="item_missing_or_wrong", order_id="ORD-100123", items=["Brown Bread"])
+    pressed = intake.intake("Brown Bread", hint, ASKS_ITEM, [], [], NoModel())
+    assert pressed.source == "button" and pressed.issues[0].items_mentioned == ["Brown Bread"]
+    assert [i.case_type for i in pressed.issues] == ["item_missing_or_wrong", "where_is_my_order"]
+
+
+@pytest.mark.parametrize("pending", [
+    ASKS_ITEM,
+    {"asks": "order", "case_type": "offers_coupons", "coupon_code": "SAVE10", "queue": []},
+    {"asks": "coupon_code", "case_type": "offers_coupons", "order_id": "ORD-100123", "queue": []},
+])
+def test_a_message_that_is_not_an_answer_gets_the_question_once_more_and_no_model_reads_it(pending):
+    result = intake.intake("hmm, not sure, maybe the eggs?", None, pending, [], [], NoModel())
+    assert result.ask_again and result.issues == [] and result.source == "rule"
+
+
+def test_after_the_question_was_asked_again_a_message_is_read_as_new_and_nothing_waiting_is_dropped():
+    again = {**ASKS_ITEM, "asked_again": True}
+    # a new problem: worked first; the unanswered one and the one queued behind it come after it
+    model = OneDraft({"scope": "in_scope", "issues": [
+        {"case_type": "payment_failed", "order_id": None, "items_mentioned": [], "claimed_amount_rupees": 250,
+         "coupon_code": None, "about_latest_order": False, "order_day": None}],
+        "sentiment": "negative", "urgency": "normal", "language": "en", "needs_clarification": False})
+    result = intake.intake("forget that, I was charged twice for something", None, again, [], [], model)
+    assert model.asked == 1 and not result.ask_again
+    assert [(i.case_type, i.order_id) for i in result.issues] == [
+        ("payment_failed", None), ("item_missing_or_wrong", "ORD-100123"), ("where_is_my_order", None)]
+    # the same problem raised again in the message replaces the unanswered one, never twice
+    rule = intake.intake("where is my order?", None, {**again, "case_type": "where_is_my_order", "queue": []},
+                         [], [], NoModel())
+    assert [i.case_type for i in rule.issues] == ["where_is_my_order"]
+    # a message that gets a fixed reply: the question follows it
+    thanks = intake.intake("thanks", None, again, [], [], NoModel())
+    assert thanks.scope == "small_talk" and thanks.still_waiting
+
+
+def test_a_button_for_another_problem_is_read_at_once_and_keeps_the_open_question():
+    pressed = intake.intake("Where is my order?", IntentHint(case_type="where_is_my_order"),
+                            {**ASKS_ITEM, "queue": []}, [], [], NoModel())
+    assert [(i.case_type, i.order_id) for i in pressed.issues] == [
+        ("where_is_my_order", None), ("item_missing_or_wrong", "ORD-100123")]
+
+
 # c3 intake: checks on what the model returns
 
 
@@ -251,7 +340,7 @@ class Shop:
         if self._order and self._order["order_id"] == order_id:
             return self._order
         if any(o["order_id"] == order_id for o in self.orders):
-            return {"order_id": order_id}
+            return {"order_id": order_id, "lines": []}
         raise NotFound("getOrder")
 
     def trip(self, order_id):
@@ -356,6 +445,42 @@ def test_which_order_a_problem_is_about(case_type, latest, orders, expect):
     assert (result.issue.order_id, result.ask, [o.order_id for o in result.choices]) == expect
 
 
+def placed(order_id, ist, status="DELIVERED", delivered=None):
+    """an order placed at `ist` (india time, "2026-10-04 23:50"), delivered at `delivered` if given."""
+    utc = lambda s: (datetime.fromisoformat(s).replace(tzinfo=wording.IST).astimezone(UTC)
+                     .isoformat().replace("+00:00", "Z"))
+    return {"order_id": order_id, "status": status, "placed_at": utc(ist),
+            "delivered_at": utc(delivered) if delivered else None}
+
+
+# the business's clock: 2026-10-05 20:00 in india, a monday
+DAYS = [placed("ORD-000005", "2026-10-05 19:40", "OUT_FOR_DELIVERY"), placed("ORD-000004", "2026-10-05 09:10"),
+        placed("ORD-000003", "2026-10-04 23:50", delivered="2026-10-05 00:05"),
+        placed("ORD-000002", "2026-10-04 13:00"), placed("ORD-000001", "2026-10-02 18:00")]
+
+
+@pytest.mark.parametrize("day,orders,expect", [
+    ("today", DAYS, (None, "order", ["ORD-000004", "ORD-000003"])),  # 0003 was delivered after midnight
+    ("yesterday", DAYS[:1] + DAYS[3:], ("ORD-000002", None, [])),
+    ("yesterday", DAYS, (None, "order", ["ORD-000003", "ORD-000002"])),  # two of that day: ask among those
+    ("friday", DAYS, ("ORD-000001", None, [])),
+    ("monday", DAYS[:2], ("ORD-000004", None, [])),  # today is a monday; the order still on its way does not fit
+    ("2026-10-02", DAYS, ("ORD-000001", None, [])),
+    ("day_before_yesterday", DAYS, (None, "order", ["ORD-000004", "ORD-000003", "ORD-000002", "ORD-000001"])),
+    ("2026-10-09", DAYS[1:], (None, "order", ["ORD-000004", "ORD-000003", "ORD-000002", "ORD-000001"])),  # future
+])
+def test_an_order_named_by_a_day_is_picked_by_code_on_the_business_clock(day, orders, expect):
+    result = run_triage(Issue(case_type="item_missing_or_wrong", order_day=day), Shop(orders))
+    assert (result.issue.order_id, result.ask, [o.order_id for o in result.choices]) == expect
+
+
+@pytest.mark.parametrize("said,kept", [("Yesterday", "yesterday"), ("day before yesterday", "day_before_yesterday"),
+                                       ("2026-10-04", "2026-10-04"), ("last week", None), ("ORD-000001", None),
+                                       (None, None)])
+def test_only_a_day_the_form_allows_is_kept(said, kept):
+    assert intake.day_word(said) == kept
+
+
 def test_an_order_named_is_kept_whatever_its_state():
     named = run_triage(Issue(case_type="item_missing_or_wrong", order_id="ORD-000005"), Shop(MIXED))
     assert (named.issue.order_id, named.ask) == ("ORD-000005", None)
@@ -456,8 +581,24 @@ def test_every_job_has_a_model_and_names_are_in_one_file():
     models = settings.load_models()
     assert models.job("intake").model == "gemini-3.5-flash-lite"
     assert models.job("communicator").model == "gemini-3.5-flash-lite"
-    assert models.key_envs == {"google": "GEMINI_API_KEY"}
+    assert models.key_envs == {"google": "GEMINI_API_KEY", "groq": "GROQ_API_KEY"}
+    assert models.job("case_lead").model == "openai/gpt-oss-120b"  # the case lead (013, since 2026-11-13)
     with pytest.raises(KeyError):
-        models.job("case_lead")  # no model until the phase that builds it
+        models.job("no_such_job")
     with pytest.raises(ValueError):
         settings.load_models('[jobs.x]\nprovider = "nobody"\nmodel = "m"\n')
+
+
+def test_a_problem_with_items_but_none_named_asks_which_item_on_its_order():
+    lines = [{"line_no": 1, "name": "Brown Bread"}, {"line_no": 2, "name": "Fresh Paneer (200 g)"},
+             {"line_no": 3, "name": "Brown Bread"}]
+    shop = Shop([row("ORD-000005", "DELIVERED")], order={"order_id": "ORD-000005", "lines": lines})
+    for case_type in ("item_missing_or_wrong", "quality"):
+        asked = run_triage(Issue(case_type=case_type, order_id="ORD-000005"), shop)
+        assert (asked.ask, asked.lines, asked.issue.order_id) == (
+            "items", ["Brown Bread", "Fresh Paneer (200 g)"], "ORD-000005")  # each name once
+    named = run_triage(Issue(case_type="item_missing_or_wrong", order_id="ORD-000005", items_mentioned=["bread"]),
+                       shop)
+    assert named.ask is None
+    for other in ("refund", "delivery_partner_behaviour"):  # not about particular items: never asked
+        assert run_triage(Issue(case_type=other, order_id="ORD-000005"), shop).ask is None

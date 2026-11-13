@@ -273,6 +273,72 @@ class RefundsResponse(Refunds, Evidenced):
     pass
 
 
+# support profile: the customer's earlier support cases, counted (blueprint 6.2, l3; c14). counts only, no text
+
+
+ClaimType = Literal["item_missing_or_wrong", "quality", "refund"]
+
+
+class ClaimCounts(BaseModel):
+    item_missing_or_wrong: int
+    quality: int
+    refund: int
+
+
+class PastResolution(BaseModel):
+    issue_type: ClaimType
+    outcome: Literal["refunded", "turned_down", "decided_by_person"]
+    refunded_paise: Paise
+    closed_at: UtcDatetime
+
+
+class SupportProfile(BaseModel):
+    customer_id: str
+    window_days: int
+    since: UtcDatetime
+    account_age_days: int
+    orders: int = Field(description="orders placed in the window")
+    delivered_orders: int = Field(description="orders delivered in the window")
+    claims: int = Field(description="closed or resolved claim cases (missing or wrong item, quality, refund) opened "
+                                    "in the window")
+    claims_last_30_days: int
+    claims_by_type: ClaimCounts
+    refunded_by_rules: int = Field(description="claims refunded without a person")
+    turned_down: int = Field(description="claims closed with no refund and no person")
+    escalated: int = Field(description="claims a person decided on a ticket")
+    escalations_approved: int
+    escalations_rejected: int
+    refunded_paise: Paise = Field(description="money refunded for the window's claims")
+    open_cases: int = Field(description="the customer's cases still open now, of any type, this one included")
+    last_resolutions: list[PastResolution] = Field(description="the last 3 closed claims, newest first")
+
+
+class SupportProfileResponse(SupportProfile, Evidenced):
+    pass
+
+
+# risk signals: accounts that share a device, an address or a upi id with this customer (blueprint 7.4, c15)
+
+
+class LinkedAccounts(BaseModel):
+    link_type: Literal["device", "address", "upi"]
+    accounts: int = Field(description="other accounts sharing it")
+    accounts_with_claims: int = Field(description="of those, the accounts with a claim in the window")
+    claims: int = Field(description="their claims in the window, together")
+
+
+class RiskSignals(BaseModel):
+    customer_id: str
+    window_days: int
+    since: UtcDatetime
+    account_age_days: int
+    links: list[LinkedAccounts] = Field(description="one row per kind of link, always all three")
+
+
+class RiskSignalsResponse(RiskSignals, Evidenced):
+    pass
+
+
 # clock
 
 
@@ -398,11 +464,32 @@ class PromotionEvaluationResponse(PromotionEvaluation, Evidenced):
     pass
 
 
-# support: cases
+# support: policy text
 
 
 IssueType = Literal["where_is_my_order", "item_missing_or_wrong", "quality", "cancellation", "refund",
                     "payment_failed", "delivery_partner_behaviour", "offers_coupons"]
+
+
+class PolicySection(BaseModel):
+    policy_id: str
+    version: str = Field(description="the first 8 hex characters of the sha-256 of the text")
+    title: str
+    body: str
+
+
+class PolicyBody(BaseModel):
+    issue_type: IssueType
+    sections: list[PolicySection] = Field(description="the active sections for this issue type, whole")
+
+
+class PolicyResponse(PolicyBody, Evidenced):
+    pass
+
+
+# support: cases
+
+
 CaseState = Literal["OPEN", "INVESTIGATING", "DECIDING", "AWAITING_CUSTOMER", "AWAITING_HUMAN", "PENDING_SYSTEM",
                     "ACTIONING", "ESCALATED", "RESOLVED", "CLOSED", "REOPENED"]
 

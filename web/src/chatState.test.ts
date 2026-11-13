@@ -43,6 +43,19 @@ describe("chatReducer", () => {
     expect(state.busy).toBe(true);
   });
 
+  it("shows what is being looked at while the checks run, and none of it once the reply is stored", () => {
+    let state = afterSend();
+    const progress = (st: "started" | "finished", text: string) =>
+      ({ type: "event", event: { type: "progress", state: st, text } }) as const;
+    state = chatReducer(state, progress("started", "Checking your order details"));
+    state = chatReducer(state, progress("started", "Reviewing delivery information"));
+    state = chatReducer(state, progress("finished", "Checking your order details"));
+    expect([state.messages[2].text, state.messages[2].status]).toEqual(["", "Reviewing delivery information"]);
+    const final = stored(3, "assistant", "A person in customer care will review this.");
+    state = chatReducer(state, { type: "event", event: { type: "done", message: final } });
+    expect(state.messages.map((m) => m.status)).toEqual(["", "", ""]);
+  });
+
   it("swaps the reply when the service replaces it", () => {
     let state = afterSend();
     state = chatReducer(state, { type: "event", event: { type: "token", text: "I'm sorry. " } });

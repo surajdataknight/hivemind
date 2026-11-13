@@ -1,12 +1,13 @@
 // server-sent events, read from a fetch body: EventSource cannot post, so the stream is parsed here
 
 export type ChatEvent =
+  | { type: "progress"; state: "started" | "finished"; text: string }
   | { type: "token"; text: string }
   | { type: "replace"; text: string }
   | { type: "done"; message: ServerMessage }
   | { type: "error"; code: string; detail: string };
 
-export type Intent = { case_type: string; order_id?: string | null; coupon_code?: string | null };
+export type Intent = { case_type: string; order_id?: string | null; coupon_code?: string | null; items?: string[] };
 export type Chip = { label: string; text: string; intent: Intent };
 
 export type ServerMessage = {

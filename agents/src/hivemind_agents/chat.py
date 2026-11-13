@@ -1,7 +1,7 @@
 """the chat service: takes one customer message, runs the case graph, stores both sides, and reports events.
 
-events, in order: `token` (a checked piece of the reply), `replace` (the reply so far is replaced by this text),
-then exactly one `done` with the stored reply. the text in events is for the customer's eyes, with their own
+events, in order: `progress` (a check started or finished, in fixed words, c25), `token` (a checked piece of the
+reply), `replace` (the reply so far is replaced by this text), then exactly one `done` with the stored reply. the text in events is for the customer's eyes, with their own
 personal data put back; what is stored and traced keeps the tokens.
 """
 
@@ -18,7 +18,8 @@ from hivemind_agents.capabilities.input_guard import MAX_MESSAGE_CHARS, PiiVault
 from hivemind_agents.capabilities.intake import HISTORY_TURNS
 from hivemind_agents.case_store import CaseStore
 from hivemind_agents.contracts import IntentHint, Reply
-from hivemind_agents.graph import RECURSION_LIMIT, RunContext, build_graph
+from hivemind_agents.capabilities import reconciler
+from hivemind_agents.graph import RECURSION_LIMIT, RunContext, StopJudge, build_graph
 from hivemind_agents.llm import LLMUnavailable, ModelRouter
 from hivemind_agents.store import ChatStore
 from hivemind_agents.tracing import Tracer, set_output
@@ -41,6 +42,8 @@ class Deps:
     store: ChatStore
     tracer: Tracer
     verifier: IdentityVerifier
+    stop_judge: StopJudge | None = reconciler.stop_judge  # c17's stop judge; none: every planned check runs
+    case_lead: bool = True  # false: the minimum plan only (an evaluation run, blueprint b.6)
 
 
 class ChatService:
@@ -120,6 +123,7 @@ class ChatService:
 
         llm = copy.copy(deps.llm)
         llm.calls = 0
+        llm.tokens = 0
         with deps.tracer.run(conversation_id, customer_id, "") as run_span:
             state: dict[str, Any] = {}
             sent_seq: int | None = None
@@ -146,10 +150,13 @@ class ChatService:
                         raise NotSignedIn("the business does not know this customer") from None
                     span.set_attribute("hivemind.scopes", identity.scopes)
 
+                asked = store.last_assistant_meta(conversation_id)
                 state = {"conversation_id": conversation_id, "identity": identity, "raw_text": text, "hint": hint,
                          "history": store.recent_turns(conversation_id, HISTORY_TURNS),
-                         "pending": store.last_assistant_meta(conversation_id).get("pending")}
-                context = RunContext(backend=backend, llm=llm, vault=vault, tracer=deps.tracer, cases=cases)
+                         "pending": asked.get("pending"),
+                         "pending_chips": asked.get("chips", []) if asked.get("pending") else []}
+                context = RunContext(backend=backend, llm=llm, vault=vault, tracer=deps.tracer, cases=cases,
+                                     stop_judge=deps.stop_judge, case_lead=deps.case_lead)
                 for mode, chunk in self.graph.stream(state, {"recursion_limit": RECURSION_LIMIT}, context=context,
                                                      stream_mode=["custom", "values"]):
                     if mode == "custom":
@@ -169,7 +176,7 @@ class ChatService:
                 cases.close()  # lets go of every case this run still holds
 
             reply.llm_calls = llm.calls
-            meta = {**reply.meta, "reply_to": sent_seq, "llm_calls": llm.calls,
+            meta = {**reply.meta, "reply_to": sent_seq, "llm_calls": llm.calls, "llm_tokens": llm.tokens,
                     "chips": [c.model_dump() for c in reply.chips]}
             if "intake" in state:
                 meta["intake"] = state["intake"].model_dump()
@@ -182,6 +189,6 @@ class ChatService:
             set_output(run_span, reply.text)
 
         done = {"type": "done", "message": self._shown(stored, vault), "repeat": False,
-                "case_state": reply.case_state, "llm_calls": llm.calls}
+                "case_state": reply.case_state, "llm_calls": llm.calls, "llm_tokens": llm.tokens}
         emit(done)
         return done

@@ -23,13 +23,8 @@ class Posted:
         return {"boards": {self.case_id: self.kept}}
 
 
-def post(case_id: str, findings: list[Finding], store: CaseStore) -> Posted:
-    """checks each finding against this case's ledger and keeps the grounded ones. raises LeaseLost when this run
-    no longer holds the case; then nothing is kept."""
-    lease = store.leases.get(case_id)
-    if lease is None:
-        raise LeaseLost(case_id)
-    ledger = store.evidence_ids(case_id)
+def grounded(case_id: str, findings: list[Finding], ledger: set[str]) -> Posted:
+    """sorts findings into those proven by reads in this case's ledger and those that are not. writes nothing."""
     posted = Posted(case_id)
     for finding in findings:
         unproven = [ref for ref in finding.evidence_refs if ref not in ledger]
@@ -39,5 +34,15 @@ def post(case_id: str, findings: list[Finding], store: CaseStore) -> Posted:
             posted.dropped.append((finding, "no read in this case returned " + ", ".join(unproven)))
         else:
             posted.kept.append(finding)
+    return posted
+
+
+def post(case_id: str, findings: list[Finding], store: CaseStore) -> Posted:
+    """checks each finding against this case's ledger and keeps the grounded ones. raises LeaseLost when this run
+    no longer holds the case; then nothing is kept."""
+    lease = store.leases.get(case_id)
+    if lease is None:
+        raise LeaseLost(case_id)
+    posted = grounded(case_id, findings, store.evidence_ids(case_id))
     store.add_findings(lease, posted.kept)
     return posted

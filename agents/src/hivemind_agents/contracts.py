@@ -41,6 +41,9 @@ class Issue(BaseModel):
     claimed_amount_paise: int | None = None
     coupon_code: str | None = None
     latest_order: bool = Field(default=False, description="the customer said their last order, with no order id")
+    order_day: str | None = Field(default=None, description="the day the customer named the order by, with no order "
+                                                            "id: today, yesterday, day_before_yesterday, a weekday, "
+                                                            "or a date (YYYY-MM-DD); triage picks the order")
 
 
 class IntakeV1(BaseModel):
@@ -51,6 +54,10 @@ class IntakeV1(BaseModel):
     language: str = "en"
     needs_clarification: bool = False
     source: Literal["button", "rule", "llm"] = Field(description="what read the message: a button, a rule, the model")
+    ask_again: bool = Field(default=False, description="the message does not answer our question: it is asked once "
+                                                       "more, and nothing else is read from the message")
+    still_waiting: bool = Field(default=False, description="our earlier question went unanswered twice and this "
+                                                           "message gets a fixed reply: the question follows it")
 
 
 class IntentHint(BaseModel):
@@ -59,6 +66,8 @@ class IntentHint(BaseModel):
     case_type: CaseType
     order_id: str | None = Field(default=None, pattern=r"^ORD-\d{6}$")
     coupon_code: str | None = Field(default=None, pattern=r"^[A-Z0-9]{3,20}$")
+    items: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(
+        default_factory=list, max_length=10, description="the order lines a 'which item?' button names")
 
 
 class Turn(BaseModel):
@@ -70,6 +79,7 @@ class OrderRef(BaseModel):
     order_id: str
     status: str
     placed_at: datetime
+    delivered_at: datetime | None = None
 
 
 # c4
@@ -107,6 +117,8 @@ class Finding(BaseModel):
     evidence_refs: list[str] = Field(min_length=1, description="evidence ids of reads made in this case")
     confidence: Literal["low", "medium", "high"]
     confidence_basis: str | None = None
+    facts: dict[str, Any] = Field(default_factory=dict, description="the values the claim rests on, as the read "
+                                                                    "returned them (never a model's words)")
 
 
 # c12
@@ -155,6 +167,125 @@ class PolicySection(BaseModel):
         return f"{self.policy_id}@{self.version}"
 
 
+# c5, c6, c7: the plan, its checks, and what each check did
+
+
+class TaskParams(BaseModel):
+    """the only params a check can be given. fixed fields, not a free map: gemini's answer schema refuses a map."""
+
+    order_id: str | None = None
+    code: str | None = None
+
+
+class TaskSpec(BaseModel):
+    """one check as the case lead writes it. the validator decides whether it runs; the model never sets an order
+    id or a code of its own (they come from the issue)."""
+
+    task_id: str = Field(pattern=r"^t\d{1,2}$")  # no examples=: gemini's answer schema refuses the key
+    capability: str = Field(max_length=40)
+    params: TaskParams = Field(default_factory=TaskParams)
+    depends_on: list[str] = Field(default_factory=list, max_length=12)
+    reason: str = Field(default="", max_length=200)
+    expects: str = Field(default="", max_length=200, description="what the check should show if the claim is true")
+
+
+class PlanV1(BaseModel):
+    """what the case lead answers: checks to add to the minimum plan, and when it would stop."""
+
+    tasks: list[TaskSpec] = Field(default_factory=list, max_length=24)
+    stop_condition: str = Field(default="", max_length=300)
+    rationale_summary: str = Field(default="", max_length=500)
+
+
+class Task(BaseModel):
+    """a check the validator let through. it runs once, after the checks it depends on (blueprint 2.3, the task
+    envelope: who asked for it and how deep in a chain of requests it sits)."""
+
+    task_id: str
+    capability: str
+    params: dict[str, str]
+    depends_on: list[str]
+    mandatory: bool
+    reason: str = ""
+    expects: str = ""
+    requested_by: str = "case_lead"  # minimum, case_lead, replan, or the id of the check that asked for it
+    depth: int = 1                   # 1 for the plan's checks; a check asked for by another is one deeper
+
+    @property
+    def dedupe_key(self) -> str:
+        return self.capability + ":" + ",".join(f"{k}={v}" for k, v in sorted(self.params.items()))
+
+
+class InfoRequest(BaseModel):
+    """a check asking for another check (blueprint 2.3, info_requests). it never starts one itself: the validator
+    decides, and the params come from the issue, as for every check."""
+
+    capability: str = Field(max_length=40)
+    reason: str = Field(default="", max_length=200)
+
+
+class CheckResult(BaseModel):
+    """what a check returns: its findings, and any other checks it asks for."""
+
+    findings: list[Finding] = []
+    info_requests: list[InfoRequest] = []
+
+
+class Plan(BaseModel):
+    """the validated plan for one case: the checks that run, the ones refused and why, and the minimum checks that
+    cannot run (then the case does not run a plan at all)."""
+
+    source: Literal["planner", "minimum"] = Field(description="planner: the case lead's plan was used; minimum: only the "
+                                                              "minimum checks")
+    tasks: list[Task] = []
+    dropped: list[tuple[str, str]] = Field(default_factory=list, description="(task or capability, why)")
+    missing: list[str] = Field(default_factory=list, description="minimum checks that cannot run")
+    stop_condition: str = ""
+    note: str = Field(default="", description="why the case lead's plan was not used, or that it came from the "
+                                              "fallback model")
+    replans: int = Field(default=0, description="how many times the case lead revised the plan")
+
+    @property
+    def runnable(self) -> bool:
+        return not self.missing
+
+
+class TaskOutcome(BaseModel):
+    """what became of one check: done (with its findings), error, timeout (no answer within its time), blocked (a
+    check it needs did not finish), not_run (the case ran out of its budget) or cancelled (the stop condition was met
+    first; never a minimum check). none is dropped silently."""
+
+    task_id: str
+    status: Literal["done", "error", "timeout", "blocked", "not_run", "cancelled"]
+    findings: list[Finding] = []
+    info_requests: list[InfoRequest] = []
+    error: str | None = None
+    attempts: int = 0
+    posted: bool = False
+
+
+# c17
+
+
+class FactSheet(BaseModel):
+    """what the evidence reconciler makes of the case board (blueprint c17): facts each citing findings and the
+    evidence behind them, the status of each part of the claim, contradictions, gaps, the follow-ups it asked for,
+    and its verdict. the deciding steps (phase 3) read only this."""
+
+    case_id: str
+    round: int = Field(ge=1, description="1 after the first checks, 2 after the follow-ups")
+    verdict: Literal["sufficient", "sufficient_with_uncertainty", "insufficient_escalate"]
+    source: Literal["reconciler", "code"] = Field(description="code: no model answered; a person decides")
+    facts: list[dict[str, Any]] = []           # statement, finding_ids, evidence_refs
+    claims: list[dict[str, Any]] = []          # about, sku, status, finding_ids
+    contradictions: list[dict[str, Any]] = []  # finding_ids (two), why
+    gaps: list[str] = []
+    follow_ups: list[str] = []
+    cross_checks: list[dict[str, Any]] = []    # what code read from the findings together
+    note: str = ""                             # why the verdict was changed, or why no model answered
+    dropped: list[str] = []                    # what the model said that had no proof on the board
+
+
 # replies
 
 
@@ -192,6 +323,11 @@ def add_pieces(left: list[Reply] | None, right: list[Reply] | None) -> list[Repl
     return (left or []) + (right or [])
 
 
+def add_outcomes(left: dict[str, TaskOutcome] | None, right: dict[str, TaskOutcome] | None) -> dict[str, TaskOutcome]:
+    """one outcome per check, keyed by case and check id; a later write of the same key replaces the earlier one."""
+    return {**(left or {}), **(right or {})}
+
+
 class RunState(TypedDict, total=False):
     """the state of one run of the case graph: one customer message in, one reply out. a message can hold several
     issues; each gets its own case and adds its piece to the reply."""
@@ -202,6 +338,7 @@ class RunState(TypedDict, total=False):
     hint: IntentHint | None
     history: list[Turn]
     pending: dict[str, Any] | None
+    pending_chips: list[dict]         # the buttons that came with our open question, shown again when it is re-asked
     guard: GuardResult
     recent_orders: list[OrderRef]
     intake: IntakeV1
@@ -214,7 +351,13 @@ class RunState(TypedDict, total=False):
     finding: PromotionFinding | None
     policy: list[PolicySection] | None
     piece: Reply | None
+    plan: Plan | None                 # the plan of the case being worked (c5, c6)
+    plan_started: float | None        # when the plan started, on the monotonic clock: the case's time budget
+    plan_usage: tuple[int, int] | None  # model calls and tokens used before the plan: its model budget starts there
+    follow_ups: list[str] | None      # what the evidence reconciler still needs once the checks are done (c5 revises)
+    fact_sheet: FactSheet | None      # the reconciler's latest sheet for the case being worked (c17)
     # what the run adds up
     pieces: Annotated[list[Reply], add_pieces]
     boards: Annotated[dict[str, list[Finding]], add_to_boards]
+    outcomes: Annotated[dict[str, TaskOutcome], add_outcomes]   # keys: "<case id>/<check id>" (c7)
     reply: Reply

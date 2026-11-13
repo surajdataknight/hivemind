@@ -1,37 +1,56 @@
 """the case graph: one run per customer message, from the cleaned message to the reply.
 
-    input_guard -> intake -> fixed_reply                                   (outside the case list, or unclear)
+    input_guard -> intake -> ask_again                                     (not an answer to our open question)
+                          -> fixed_reply                                   (outside the case list, or unclear)
                           -> triage -> case_manager -> order_status        (where is my order: template, no model)
                                ^                    -> promotions_investigator -> policy_provider -> communicator
-                               |                    -> waiting_for_person  (a case type with no path yet)
+                               |                    -> plan -> schedule <-> investigate   (T2 types: case lead, c5-c7)
+                               |                         -> finish_plan -> reconcile -> replan -> schedule  (c17's
+                               |                                                        follow-ups, one round)
+                               |                                                     -> waiting_for_person
+                               |                    -> waiting_for_person  (a case type with no path yet, or a plan
+                               |                                           whose minimum checks cannot run)
                                |     then close_case moves the case to where its part of the reply left it
                                +---- the next issue in the message, until none is left; then reply
 
 each issue in a message gets its own case and its own part of one reply (blueprint s21). an issue that needs a
-question (which order? which coupon?) waits for the answer; the reply ends with one question, and the other issues
-that need one wait in it.
+question (which order? which coupon? which item?) waits for the answer; the reply ends with one question, and the
+other issues that need one wait in it.
 
-rules choose the path; no model does. a node that cannot reach the backend or the model raises, and the chat
-service answers with the "having trouble" reply instead of a guess.
+rules choose the path; no model does, except the case lead, which only proposes checks (the validator decides what
+runs), and the evidence reconciler, whose follow-ups go back to the case lead. a node that cannot reach the backend or the model raises, and the chat service answers with the "having
+trouble" reply instead of a guess.
 """
 
+import random
+import threading
+import time
 from dataclasses import dataclass, field
+from typing import Callable
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
+from langgraph.types import Send
 
-from hivemind_agents import replies
+from hivemind_agents import board, replies
 from hivemind_agents.backend_client import BackendClient
 from hivemind_agents.capabilities import (case_manager, communicator, input_guard, intake, order_status,
-                                          policy_provider, promotions_investigator, triage)
-from hivemind_agents.case_store import CaseStore
-from hivemind_agents.contracts import Issue, Reply, RunState
+                                          planner, policy_provider, progress_reporter, promotions_investigator,
+                                          reconciler, triage)
+from hivemind_agents.capabilities import registry as check_registry
+from hivemind_agents.capabilities.registry import Capability, CheckInput
+from hivemind_agents import scheduler
+from hivemind_agents.case_store import CaseStore, LeaseLost
+from hivemind_agents.contracts import Chip, Finding, Issue, Plan, Reply, RunState, TaskOutcome
 from hivemind_agents.llm import ModelRouter
 from hivemind_agents.reply_stream import ReplyStream
 from hivemind_agents.tracing import Tracer, set_output
 
 # a few nodes per issue; this is far above any real message and still stops a run that never ends
 RECURSION_LIMIT = 200
+
+# whether the plan's stop condition is met by the findings so far (c17's stop judge, in code)
+StopJudge = Callable[[Plan, list[Finding]], bool]
 
 
 @dataclass
@@ -44,6 +63,30 @@ class RunContext:
     tracer: Tracer
     cases: CaseStore
     out: ReplyStream = field(default_factory=ReplyStream)
+    checks: dict[str, Capability] = field(default_factory=lambda: check_registry.CAPABILITIES)  # c5, c6
+    retry_sleep: Callable[[float], None] = time.sleep
+    rng: random.Random = field(default_factory=random.Random)
+    stop_judge: StopJudge | None = reconciler.stop_judge  # none: every planned check runs
+    case_lead: bool = True  # false: the minimum plan only, never revised (an evaluation run, blueprint b.6)
+    _stops: dict[str, threading.Event] = field(default_factory=dict)
+    _seen: dict[str, list[Finding]] = field(default_factory=dict)  # grounded findings so far, for the stop judge
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def stop_signal(self, case_id: str) -> threading.Event:
+        with self._lock:
+            return self._stops.setdefault(case_id, threading.Event())
+
+    def judge(self, case_id: str, plan: Plan, board: list[Finding], new: list[Finding]) -> bool:
+        """adds a check's grounded findings to what the stop judge has seen for the case, and asks it."""
+        if self.stop_judge is None:
+            return False
+        with self._lock:
+            seen = self._seen.setdefault(case_id, list(board))
+            seen.extend(new)
+            met = self.stop_judge(plan, list(seen))
+        if met:
+            self.stop_signal(case_id).set()
+        return met
 
 
 Run = Runtime[RunContext]
@@ -69,40 +112,96 @@ def intake_node(state: RunState, runtime: Run) -> dict:
 
 def after_intake(state: RunState) -> str:
     result = state["intake"]
+    if result.ask_again:
+        return "ask_again"
     if result.language != "en" or result.scope != "in_scope" or result.needs_clarification:
         return "fixed_reply"
     return "triage"
 
 
+def question_of(pending: dict) -> str:
+    """the words of our open question (a question asked before they were kept is worded again)."""
+    if pending.get("question"):
+        return pending["question"]
+    if pending.get("asks") == "coupon_code":
+        return replies.which_coupon(pending.get("order_id"))
+    if pending.get("asks") == "items":
+        return replies.which_item(pending["case_type"], pending.get("order_id"))
+    return replies.which_order(pending["case_type"])
+
+
+def _open_question(state: RunState) -> tuple[list[Chip], dict]:
+    return [Chip(**chip) for chip in state.get("pending_chips") or []], {"pending": state["pending"]}
+
+
+def ask_again_node(state: RunState, runtime: Run) -> dict:
+    """the message does not answer our question: the same question once more, with its buttons; the next message
+    that does not answer it is read as a new one (intake.keep_waiting)."""
+    with runtime.context.tracer.capability("fixed_reply") as span:
+        span.set_attribute("hivemind.reply.kind", "ask_again")
+        chips, meta = _open_question(state)
+        meta["pending"] = {**meta["pending"], "asked_again": True}
+        return {"reply": Reply(kind="ask_again", text=replies.ask_again(question_of(state["pending"])),
+                               chips=chips, meta=meta)}
+
+
 def fixed_reply_node(state: RunState, runtime: Run) -> dict:
     result = state["intake"]
     with runtime.context.tracer.capability("fixed_reply") as span:
-        if result.language != "en":
-            kind, text = "english_only", replies.ENGLISH_ONLY
-        elif result.scope == "out_of_scope":
-            kind, text = "out_of_scope", replies.OUT_OF_SCOPE
-        elif result.scope == "safety":
-            kind, text = "safety", replies.SAFETY
-        elif result.scope == "legal":
-            kind, text = "legal", replies.LEGAL
-        elif result.scope == "small_talk":
-            thanks = intake.THANKS.match(state["guard"].sanitised_text)
-            kind, text = ("thanks", replies.THANKS) if thanks else ("greeting", replies.GREETING)
-        else:
-            kind, text = "clarify", replies.CLARIFY
-        span.set_attribute("hivemind.reply.kind", kind)
-        return {"reply": Reply(kind=kind, text=text)}
+        reply = _fixed_reply(state)
+        if result.still_waiting and state.get("pending"):  # our question went unanswered: it follows the reply
+            chips, meta = _open_question(state)
+            reply = Reply(kind=reply.kind, text=reply.text + replies.PART_BREAK + question_of(state["pending"]),
+                          chips=chips, meta=meta)
+            span.set_attribute("hivemind.reply.question_follows", True)
+        span.set_attribute("hivemind.reply.kind", reply.kind)
+        return {"reply": reply}
+
+
+def _fixed_reply(state: RunState) -> Reply:
+    result = state["intake"]
+    if result.language != "en":
+        kind, text = "english_only", replies.ENGLISH_ONLY
+    elif result.scope == "out_of_scope":
+        kind, text = "out_of_scope", replies.OUT_OF_SCOPE
+    elif result.scope == "safety":
+        kind, text = "safety", replies.SAFETY
+    elif result.scope == "legal":
+        kind, text = "legal", replies.LEGAL
+    elif result.scope == "small_talk":
+        thanks = intake.THANKS.match(state["guard"].sanitised_text)
+        kind, text = ("thanks", replies.THANKS) if thanks else ("greeting", replies.GREETING)
+    else:
+        kind, text = "clarify", replies.CLARIFY
+    return Reply(kind=kind, text=text)
+
+
+def _claim_words(issue: Issue) -> dict:
+    """what the customer said about the problem itself, kept with a question so the answer does not lose it."""
+    return {"items_mentioned": issue.items_mentioned, "claimed_amount_paise": issue.claimed_amount_paise}
 
 
 def _question(result: triage.Triage, issue: Issue, backend: BackendClient) -> Reply:
+    """the question an issue waits on. its pending record keeps the issue and the question's own words, so an
+    answer that is not clean gets the same question again."""
     if result.ask == "order":
         now = order_status._time(backend.clock()["now"])
         text = replies.order_not_found(result.unknown_order) if result.unknown_order else replies.which_order()
-        pending = {"asks": "order", "case_type": issue.case_type, "coupon_code": issue.coupon_code, "queue": []}
+        pending = {"asks": "order", "case_type": issue.case_type, "coupon_code": issue.coupon_code, "queue": [],
+                   "question": text, **_claim_words(issue)}
         chips = replies.order_chips(issue.case_type, result.choices, now, issue.coupon_code)
         return Reply(kind="ask_order", text=text, chips=chips, meta={"pending": pending})
-    pending = {"asks": "coupon_code", "case_type": issue.case_type, "order_id": issue.order_id, "queue": []}
-    return Reply(kind="ask_coupon_code", text=replies.which_coupon(issue.order_id), meta={"pending": pending})
+    if result.ask == "items":
+        text = replies.which_item(issue.case_type, issue.order_id)
+        pending = {"asks": "items", "case_type": issue.case_type, "order_id": issue.order_id,
+                   "coupon_code": issue.coupon_code, "lines": result.lines, "queue": [], "question": text,
+                   **_claim_words(issue)}
+        chips = replies.item_chips(issue.case_type, issue.order_id, result.lines[:triage.MAX_ITEM_CHIPS])
+        return Reply(kind="ask_items", text=text, chips=chips, meta={"pending": pending})
+    text = replies.which_coupon(issue.order_id)
+    pending = {"asks": "coupon_code", "case_type": issue.case_type, "order_id": issue.order_id, "queue": [],
+               "question": text, **_claim_words(issue)}
+    return Reply(kind="ask_coupon_code", text=text, meta={"pending": pending})
 
 
 def triage_node(state: RunState, runtime: Run) -> dict:
@@ -167,6 +266,8 @@ def after_case_manager(state: RunState) -> str:
         return "order_status"
     if case_type == "offers_coupons":
         return "promotions_investigator"
+    if case_type in planner.MINIMUM:
+        return "plan"
     return "waiting_for_person"
 
 
@@ -211,12 +312,227 @@ def waiting_node(state: RunState, runtime: Run) -> dict:
     with runtime.context.tracer.capability("fixed_reply") as span:
         span.set_attribute("hivemind.reply.kind", "waiting_for_person")
         text = replies.waiting_for_person(state["case"].case_type)
-        return {"piece": Reply(kind="waiting_for_person", text=text, case_state="AWAITING_HUMAN")}
+        sheet = state.get("fact_sheet")
+        meta = {"fact_sheet": {"round": sheet.round, "verdict": sheet.verdict, "source": sheet.source}} if sheet else {}
+        return {"piece": Reply(kind="waiting_for_person", text=text, case_state="AWAITING_HUMAN", meta=meta)}
+
+
+# the case lead, the scheduler and the checks (c5, c6, c7)
+
+
+def plan_node(state: RunState, runtime: Run) -> dict:
+    ctx, case = runtime.context, state["case"]
+    usage = (ctx.llm.calls, ctx.llm.tokens)  # the case's model budget counts from here, the case lead included
+    started = time.monotonic()
+    with ctx.tracer.capability("case_lead", uses_llm=True) as span:
+        plan = planner.plan_for(case.case_type, state["issue"], state["guard"].sanitised_text, ctx.checks,
+                                set(state["identity"].scopes), ctx.llm, use_case_lead=ctx.case_lead)
+        span.set_attribute("hivemind.plan.source", plan.source)
+        span.set_attribute("hivemind.plan.runnable", plan.runnable)
+        span.set_attribute("hivemind.plan.checks", len(plan.tasks))
+        if plan.note:
+            span.set_attribute("hivemind.plan.note", plan.note)
+        set_output(span, plan.model_dump(mode="json"))
+    _keep_plan(state, ctx, plan, {})
+    if plan.runnable:
+        runtime.stream_writer(progress_reporter.event(None, "started"))
+    return {"plan": plan, "plan_started": started, "plan_usage": usage, "follow_ups": None, "fact_sheet": None}
+
+
+def _lease(ctx: RunContext, case_id: str):
+    lease = ctx.cases.leases.get(case_id)
+    if lease is None:
+        raise LeaseLost(case_id)
+    return lease
+
+
+def _keep_plan(state: RunState, ctx: RunContext, plan: Plan, outcomes: dict[str, TaskOutcome]) -> None:
+    """the plan and what became of each check so far, for anyone watching the case (the scenario panel)."""
+    case = state["case"]
+    about = {"case_type": case.case_type, "order_id": case.order_id, "customer_id": state["identity"].customer_id,
+             "conversation_id": state["conversation_id"]}
+    ctx.cases.save_plan(_lease(ctx, case.case_id), about, plan.model_dump(mode="json"),
+                        {tid: o.model_dump(mode="json", exclude={"findings"}) for tid, o in outcomes.items()})
+
+
+def after_plan(state: RunState) -> str:
+    return "schedule" if state["plan"].runnable else "waiting_for_person"
+
+
+def _outcomes_of(state: RunState, case_id: str) -> dict[str, TaskOutcome]:
+    prefix = f"{case_id}/"
+    return {key[len(prefix):]: outcome for key, outcome in state.get("outcomes", {}).items() if key.startswith(prefix)}
+
+
+def _budget_stop(state: RunState, ctx: RunContext) -> str | None:
+    calls_at, tokens_at = state.get("plan_usage") or (ctx.llm.calls, ctx.llm.tokens)
+    return scheduler.over_budget(state.get("plan_started"), time.monotonic(), ctx.llm.calls - calls_at,
+                                 ctx.llm.tokens - tokens_at)
+
+
+def schedule_node(state: RunState, runtime: Run) -> dict:
+    """after each wave: the findings of the checks that just finished go on the board (one writer, under the case's
+    lease), and the checks they ask for go through the validator into the plan. checks that cannot run any more
+    are recorded as blocked, as not run when the case is over a budget, or as cancelled when the stop condition is
+    met (never a minimum check)."""
+    ctx, plan, case = runtime.context, state["plan"], state["case"]
+    with ctx.tracer.capability("scheduler") as span:
+        decided = _outcomes_of(state, case.case_id)
+        on_board = list(state.get("boards", {}).get(case.case_id, []))
+        update: dict = {}
+        fresh = {tid: o for tid, o in decided.items() if o.status == "done" and not o.posted}
+        if fresh:
+            findings = [f for o in fresh.values() for f in o.findings]
+            posted = board.post(case.case_id, findings, ctx.cases)
+            span.set_attribute("hivemind.findings.dropped", len(posted.dropped))
+            update["boards"] = posted.update()["boards"]
+            on_board += posted.kept
+            update["outcomes"] = {scheduler.key(case.case_id, tid): o.model_copy(update={"posted": True})
+                                  for tid, o in fresh.items()}
+            decided.update({tid: o.model_copy(update={"posted": True}) for tid, o in fresh.items()})
+            by_id = {t.task_id: t for t in plan.tasks}
+            for tid, outcome in fresh.items():
+                if outcome.info_requests:
+                    plan = planner.admit(state["issue"], plan, by_id[tid], outcome.info_requests, ctx.checks,
+                                         set(state["identity"].scopes))
+            if plan is not state["plan"]:
+                update["plan"] = plan
+                span.set_attribute("hivemind.plan.checks", len(plan.tasks))
+        stop = _budget_stop(state, ctx)
+        if stop:
+            span.set_attribute("hivemind.plan.stopped", stop)
+            for task in plan.tasks:
+                if task.task_id not in decided:
+                    decided[task.task_id] = TaskOutcome(task_id=task.task_id, status="not_run", error=stop)
+                    update.setdefault("outcomes", {})[scheduler.key(case.case_id, task.task_id)] = decided[task.task_id]
+        signal = ctx.stop_signal(case.case_id)
+        if not signal.is_set() and fresh and ctx.stop_judge is not None and ctx.stop_judge(plan, on_board):
+            signal.set()
+        if signal.is_set():
+            span.set_attribute("hivemind.plan.stop_condition_met", True)
+            for task in plan.tasks:
+                if task.task_id not in decided and not task.mandatory:
+                    decided[task.task_id] = TaskOutcome(task_id=task.task_id, status="cancelled",
+                                                        error="the stop condition was met")
+                    update.setdefault("outcomes", {})[scheduler.key(case.case_id, task.task_id)] = decided[task.task_id]
+        while True:
+            stuck = scheduler.blocked(plan.tasks, decided)
+            if not stuck:
+                break
+            for task in stuck:
+                decided[task.task_id] = TaskOutcome(task_id=task.task_id, status="blocked",
+                                                    error="a check it needs did not finish")
+                update.setdefault("outcomes", {})[scheduler.key(case.case_id, task.task_id)] = decided[task.task_id]
+        span.set_attribute("hivemind.checks.decided", len(decided))
+    if update:
+        _keep_plan(state, ctx, update.get("plan", plan), decided)
+    return update
+
+
+def fan_out(state: RunState):
+    """the wave: every check whose checks are done, at most MAX_PARALLEL, side by side (LangGraph Send)."""
+    case = state["case"]
+    ready_now = scheduler.ready(state["plan"].tasks, _outcomes_of(state, case.case_id))[:scheduler.MAX_PARALLEL]
+    if not ready_now:
+        return "finish_plan"
+    on_board = list(state.get("boards", {}).get(case.case_id, []))
+    return [Send("investigate", {"task": task, "case": case, "plan": state["plan"], "board": on_board,
+                                 "started": state.get("plan_started"), "issue": state.get("issue")})
+            for task in ready_now]
+
+
+def investigate_node(payload: dict, runtime: Run) -> dict:
+    """one check, within its own time limit and the case's clock. a check that is not a minimum check stops when
+    the stop condition is met, by a sibling's findings too; this check's grounded findings go to the stop judge."""
+    ctx, task, case = runtime.context, payload["task"], payload["case"]
+    capability = ctx.checks[task.capability]
+    started = payload.get("started")
+    runtime.stream_writer(progress_reporter.event(task.capability, "started"))
+    with ctx.tracer.capability(f"check {task.capability}") as span:
+        check = CheckInput(case, ctx.backend, issue=payload.get("issue"), board=tuple(payload["board"]), llm=ctx.llm)
+        outcome = scheduler.run_task(task, capability, check, ctx.retry_sleep, ctx.rng,
+                                     deadline=lambda: scheduler.seconds_left(started, time.monotonic()),
+                                     stop=None if task.mandatory else ctx.stop_signal(case.case_id))
+        span.set_attribute("hivemind.check.status", outcome.status)
+        span.set_attribute("hivemind.check.attempts", outcome.attempts)
+        if outcome.status == "done" and ctx.stop_judge is not None:
+            proven = board.grounded(case.case_id, outcome.findings, ctx.cases.evidence_ids(case.case_id)).kept
+            span.set_attribute("hivemind.check.stop_condition_met",
+                               ctx.judge(case.case_id, payload["plan"], payload["board"], proven))
+        set_output(span, outcome.model_dump(mode="json"))
+    runtime.stream_writer(progress_reporter.event(task.capability, "finished"))
+    return {"outcomes": {scheduler.key(case.case_id, task.task_id): outcome}}
+
+
+def finish_plan_node(state: RunState, runtime: Run) -> dict:
+    """no check is ready: whatever is still undecided waits on a check that did not finish, so it is blocked."""
+    ctx, case, plan = runtime.context, state["case"], state["plan"]
+    decided = _outcomes_of(state, case.case_id)
+    blocked = {t.task_id: TaskOutcome(task_id=t.task_id, status="blocked", error="a check it needs did not finish")
+               for t in plan.tasks if t.task_id not in decided}
+    with ctx.tracer.capability("scheduler") as span:
+        span.set_attribute("hivemind.checks.done", sum(1 for o in decided.values() if o.status == "done"))
+    return {"outcomes": {scheduler.key(case.case_id, tid): o for tid, o in blocked.items()}} if blocked else {}
+
+
+def reconcile_node(state: RunState, runtime: Run) -> dict:
+    """c17: the fact sheet of the board, kept per round with the plan and what became of each check. its follow-ups
+    go to the case lead only while the plan may still be revised, the stop condition is not met and the case is
+    within its budget; over the budget, no model is asked and the sheet sends the case to a person."""
+    ctx, case, plan = runtime.context, state["case"], state["plan"]
+    decided = _outcomes_of(state, case.case_id)
+    found = list(state.get("boards", {}).get(case.case_id, []))
+    issues = len(state["intake"].issues)
+    over = _budget_stop(state, ctx)
+    may_follow_up = (ctx.case_lead and plan.replans < planner.replans_allowed(issues) and over is None
+                     and not ctx.stop_signal(case.case_id).is_set())
+    with ctx.tracer.capability("evidence_reconciler", uses_llm=over is None) as span:
+        if over is None:
+            planned = {t.capability for t in plan.tasks}
+            scopes = set(state["identity"].scopes)
+            addable = [c for c in ctx.checks.values() if c.name not in planned and c.scopes <= scopes]
+            sheet = reconciler.reconcile(case.case_id, state["issue"], found, plan, decided, ctx.llm,
+                                         complex_case=issues > 1, may_follow_up=may_follow_up, addable=addable)
+        else:
+            sheet = reconciler.from_code(found, plan, decided, reconciler.cross_checks(found), plan.replans + 1,
+                                         case.case_id, f"no model asked: the case is {over}")
+        span.set_attribute("hivemind.fact_sheet.verdict", sheet.verdict)
+        span.set_attribute("hivemind.fact_sheet.source", sheet.source)
+        span.set_attribute("hivemind.fact_sheet.round", sheet.round)
+        span.set_attribute("hivemind.plan.follow_ups", len(sheet.follow_ups))
+        span.set_attribute("hivemind.fact_sheet.dropped", len(sheet.dropped))
+        set_output(span, sheet.model_dump(mode="json"))
+    _keep_plan(state, ctx, plan, decided)
+    ctx.cases.save_fact_sheet(_lease(ctx, case.case_id), sheet)
+    return {"fact_sheet": sheet, "follow_ups": sheet.follow_ups or None}
+
+
+def after_finish(state: RunState) -> str:
+    plan = state["plan"]
+    if state.get("follow_ups") and plan.replans < planner.replans_allowed(len(state["intake"].issues)):
+        return "replan"
+    return "waiting_for_person"
+
+
+def replan_node(state: RunState, runtime: Run) -> dict:
+    """the case lead revises the plan for the reconciler's follow-ups; the validator lets in only new checks."""
+    ctx, case, plan = runtime.context, state["case"], state["plan"]
+    with ctx.tracer.capability("case_lead", uses_llm=True) as span:
+        revised = planner.replan(case.case_type, state["issue"], plan, _outcomes_of(state, case.case_id),
+                                 list(state.get("boards", {}).get(case.case_id, [])), state["follow_ups"],
+                                 ctx.checks, set(state["identity"].scopes), ctx.llm,
+                                 planner.replans_allowed(len(state["intake"].issues)))
+        span.set_attribute("hivemind.plan.replans", revised.replans)
+        span.set_attribute("hivemind.plan.checks", len(revised.tasks))
+        if revised.note:
+            span.set_attribute("hivemind.plan.note", revised.note)
+        set_output(span, revised.model_dump(mode="json"))
+    return {"plan": revised, "follow_ups": None}
 
 
 def _reason(piece: Reply) -> str:
-    if piece.kind == "waiting_for_person":
-        return "no_path_yet"
+    if piece.kind == "waiting_for_person":  # the checks ran: the reconciler's verdict; phase 3 decides from it
+        return "fact_sheet_" + piece.meta["fact_sheet"]["verdict"] if "fact_sheet" in piece.meta else "no_path_yet"
     return "money_owed" if piece.case_state == "AWAITING_HUMAN" else "answered"
 
 
@@ -250,7 +566,9 @@ def reply_node(state: RunState, runtime: Run) -> dict:
                                 for p in parts]}
         if ask is not None:
             if ask.text == replies.which_order():  # after other parts, say which problem the question is about
-                ask = ask.model_copy(update={"text": replies.which_order(ask.meta["pending"]["case_type"])})
+                ask = ask.model_copy(update={"text": replies.which_order(ask.meta["pending"]["case_type"])},
+                                     deep=True)
+                ask.meta["pending"]["question"] = ask.text
             meta["pending"] = ask.meta["pending"]
             meta["parts"].append({"kind": ask.kind, "case_id": None, "case_state": None, "meta": {}})
         text = replies.PART_BREAK.join([p.text for p in parts] + ([ask.text] if ask else []))
@@ -266,6 +584,7 @@ def build_graph():
     graph.add_node("input_guard", guard_node)
     graph.add_node("intake", intake_node)
     graph.add_node("fixed_reply", fixed_reply_node)
+    graph.add_node("ask_again", ask_again_node)
     graph.add_node("triage", triage_node)
     graph.add_node("case_manager", case_manager_node)
     graph.add_node("order_status", order_status_node)
@@ -273,16 +592,30 @@ def build_graph():
     graph.add_node("policy_provider", policy_node)
     graph.add_node("communicator", communicator_node)
     graph.add_node("waiting_for_person", waiting_node)
+    graph.add_node("plan", plan_node)
+    graph.add_node("schedule", schedule_node)
+    graph.add_node("investigate", investigate_node)
+    graph.add_node("finish_plan", finish_plan_node)
+    graph.add_node("reconcile", reconcile_node)
+    graph.add_node("replan", replan_node)
     graph.add_node("close_case", close_case_node)
     graph.add_node("reply", reply_node)
 
     graph.add_edge(START, "input_guard")
     graph.add_edge("input_guard", "intake")
-    graph.add_conditional_edges("intake", after_intake, ["fixed_reply", "triage"])
+    graph.add_conditional_edges("intake", after_intake, ["ask_again", "fixed_reply", "triage"])
     graph.add_edge("fixed_reply", END)
+    graph.add_edge("ask_again", END)
     graph.add_conditional_edges("triage", after_triage, ["case_manager", "triage", "reply"])
     graph.add_conditional_edges("case_manager", after_case_manager,
-                                ["close_case", "order_status", "promotions_investigator", "waiting_for_person"])
+                                ["close_case", "order_status", "promotions_investigator", "plan",
+                                 "waiting_for_person"])
+    graph.add_conditional_edges("plan", after_plan, ["schedule", "waiting_for_person"])
+    graph.add_conditional_edges("schedule", fan_out, ["investigate", "finish_plan"])
+    graph.add_edge("investigate", "schedule")
+    graph.add_edge("finish_plan", "reconcile")
+    graph.add_conditional_edges("reconcile", after_finish, ["replan", "waiting_for_person"])
+    graph.add_edge("replan", "schedule")
     graph.add_edge("order_status", "close_case")
     graph.add_edge("promotions_investigator", "policy_provider")
     graph.add_edge("policy_provider", "communicator")

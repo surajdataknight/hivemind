@@ -1,0 +1,24 @@
+[project]
+name = "hivemind-evals"
+version = "0.0.0"
+description = "evaluation: scenarios from the hidden truth, a simulated customer, the grader, and the b.6 baselines"
+requires-python = "==3.12.*"
+dependencies = [
+    "hivemind-backend",
+    "hivemind-datagen",
+    "hivemind-agents",
+    "psycopg[binary]==3.3.8",
+    "pydantic==2.14.3",
+]
+
+[project.scripts]
+hm-evals = "hivemind_evals.cli:main"
+
+[tool.uv.sources]
+hivemind-backend = { workspace = true }
+hivemind-datagen = { workspace = true }
+hivemind-agents = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13"]
+build-backend = "uv_build"

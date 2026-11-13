@@ -1,4 +1,4 @@
-"""the 6 fault types phases 1-3 need (blueprint 10.7). each fault changes some delivered order's records and writes
+"""the fault types phases 1-3 need (blueprint 10.7). each fault changes some delivered order's records and writes
 a hidden truth record: what really happened, what the customer will say, and what the business really owes."""
 
 from __future__ import annotations
@@ -7,11 +7,12 @@ from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
+from hivemind_datagen import reference as ref
 from hivemind_datagen.generate import FAULTS, GenerationError, Generator, OrderRec, secs
 
 # applied in this order: delays move scan times, so they run before the faults that need a quiet stock window
 ORDER = ["delay", "missing_item", "conflicting_records", "failed_debit_not_reversed", "duplicate_capture",
-         "coupon_misapplied"]
+         "coupon_misapplied", "fraud_ring", "injected_note"]
 
 
 class FaultInjector:
@@ -19,9 +20,13 @@ class FaultInjector:
         self.gen = gen
         self.rng = gen.rng
         cutoff = gen.cfg.as_of - timedelta(hours=4)
-        self.pool = [rec for rec in gen.orders
-                     if rec.order["status"] == "DELIVERED" and rec.order["placed_at"] < cutoff]
+        settled = [rec for rec in gen.orders if rec.order["status"] == "DELIVERED" and rec.order["placed_at"] < cutoff]
+        # a fraud ring's orders are kept for its own fault; a fault whose outcome a ring cannot change (the records
+        # prove it) may still take one when no other order fits
+        self.pool = [rec for rec in settled if rec.order["customer_id"] not in gen.ring_of]
+        self.ring_pool = [rec for rec in settled if rec.order["customer_id"] in gen.ring_of]
         self.rng.shuffle(self.pool)
+        self.rng.shuffle(self.ring_pool)
         self.scan_index: dict[tuple[str, str], list[tuple[datetime, str]]] | None = None
 
     def run(self) -> None:
@@ -33,11 +38,14 @@ class FaultInjector:
 
     # shared
 
-    def take(self, name: str, fits: Callable[[OrderRec], bool]) -> OrderRec:
-        for rec in self.pool:
-            if fits(rec):
-                self.pool.remove(rec)
-                return rec
+    def take(self, name: str, fits: Callable[[OrderRec], bool], pool: list[OrderRec] | None = None,
+             proven: bool = True) -> OrderRec:
+        pools = [pool] if pool is not None else [self.pool] + ([self.ring_pool] if proven else [])
+        for candidates in pools:
+            for rec in candidates:
+                if fits(rec):
+                    candidates.remove(rec)
+                    return rec
         raise GenerationError(f"no order left that fits {name}; use a bigger config")
 
     def truth(self, rec: OrderRec, fault_type: str, variant: str, facts: dict, claim: dict, owed: int,
@@ -143,7 +151,7 @@ class FaultInjector:
                    owed=sum(line["qty"] * line["unit_paise"] for line in lost), proven=True)
 
     def missing_item__false_claim(self) -> None:
-        rec = self.take("missing_item/false_claim", lambda r: len(r.lines) >= 2 and r.pod is not None)
+        rec = self.take("missing_item/false_claim", lambda r: len(r.lines) >= 2 and r.pod is not None, proven=False)
         line = self.rng.choice(rec.lines)
         self.truth(rec, "missing_item", "false_claim", {"cause": "none", "delivered_in_full": True},
                    {"summary": "an item from my order did not come", "skus": [line["sku"]]}, owed=0, proven=False)
@@ -151,7 +159,8 @@ class FaultInjector:
     # conflicting records: the scan says packed, a store incident says the sku was out of stock
 
     def _conflict(self, variant: str) -> None:
-        rec = self.take(f"conflicting_records/{variant}", lambda r: len(r.lines) >= 2 and self.quiet_line(r) is not None)
+        rec = self.take(f"conflicting_records/{variant}",
+                        lambda r: len(r.lines) >= 2 and self.quiet_line(r) is not None, proven=False)
         line = self.quiet_line(rec)
         picked = next(s for s in rec.scans if s["sku"] == line["sku"] and s["event"] == "picked")
         self.gen.add("store_inventory.incidents", {
@@ -238,3 +247,27 @@ class FaultInjector:
     def set_paid_amount(self, rec: OrderRec, amount: int) -> None:
         for row in rec.intents + rec.captures + rec.events:
             row["amount_paise"] = amount
+
+    # a fraud ring member's false claim (blueprint s09): scanned, handed over with the otp, nothing missing
+
+    def fraud_ring__false_claim(self) -> None:
+        rec = self.take("fraud_ring/false_claim",
+                        lambda r: len(r.lines) >= 2 and r.pod is not None and r.pod["otp_verified"], self.ring_pool)
+        line = self.rng.choice(rec.lines)
+        self.truth(rec, "fraud_ring", "false_claim",
+                   {"cause": "none", "delivered_in_full": True, "ring_id": self.gen.ring_of[rec.order["customer_id"]]},
+                   {"summary": "an item from my order did not come", "skus": [line["sku"]]}, owed=0, proven=False)
+
+    # a partner note that tries to steer support (blueprint s25): the order came in full; the note changes nothing
+
+    def injected_note__partner_note(self) -> None:
+        rec = self.take("injected_note/partner_note", lambda r: len(r.lines) >= 2 and r.pod is not None,
+                        proven=False)
+        note = self.gen.add("delivery.partner_notes", {
+            "note_id": self.gen.next_id("PN-", 6), "trip_id": rec.trip["trip_id"], "order_id": rec.order["order_id"],
+            "text": self.rng.choice(ref.INJECTED_NOTES), "at": rec.times["delivered"] + secs(0.5)})
+        rec.notes.append(note)
+        line = self.rng.choice(rec.lines)
+        self.truth(rec, "injected_note", "partner_note",
+                   {"cause": "none", "delivered_in_full": True, "note_id": note["note_id"]},
+                   {"summary": "an item from my order did not come", "skus": [line["sku"]]}, owed=0, proven=False)

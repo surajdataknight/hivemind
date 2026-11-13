@@ -1,13 +1,19 @@
-"""the chat service's web api. the chat screen talks only to this.
+"""the chat service's web api. the chat screen and the scenario panel talk only to this.
 
     POST /v1/conversations                      start a chat (session token in the Authorization header)
     GET  /v1/conversations/{id}                 the chat so far
     POST /v1/conversations/{id}/messages        send a message; the reply comes back as server-sent events
+    GET  /v1/panel/cases                        the scenario panel: the latest cases (panel key in the header)
+    GET  /v1/panel/cases/{case_id}              one case: plan, checks, findings, fact sheets, reads
+
+the panel shows what hivemind found, the risk check included, so a customer's session token never opens it: it
+needs the panel key (HM_PANEL_KEY in .env); with none set, the panel is off.
 """
 
 import json
 import logging
 import queue
+import secrets
 import threading
 from typing import Annotated, Iterator
 
@@ -19,6 +25,7 @@ from hivemind_agents.capabilities.identity import NotSignedIn
 from hivemind_agents.capabilities.input_guard import MAX_MESSAGE_CHARS
 from hivemind_agents.chat import Busy, ChatService, NotYours
 from hivemind_agents.contracts import IntentHint
+from hivemind_agents.panel import PanelReader
 
 log = logging.getLogger("hivemind_agents")
 
@@ -34,8 +41,8 @@ def sse(event: dict) -> str:
     return f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-def create_app(service: ChatService) -> FastAPI:
-    app = FastAPI(title="HiveMind chat service", version="0.1.0")
+def create_app(service: ChatService, panel: PanelReader | None = None, panel_key: str | None = None) -> FastAPI:
+    app = FastAPI(title="HiveMind chat service", version="0.2.0")
 
     def session_token(authorization: str | None) -> str:
         if not authorization or not authorization.startswith("Bearer "):
@@ -102,5 +109,24 @@ def create_app(service: ChatService) -> FastAPI:
 
         return StreamingResponse(stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    def panel_reader(authorization: str | None) -> PanelReader:
+        if panel is None or not panel_key:
+            raise HTTPException(status_code=503, detail="the scenario panel is off: set HM_PANEL_KEY in .env")
+        given = authorization.removeprefix("Bearer ") if authorization and authorization.startswith("Bearer ") else ""
+        if not secrets.compare_digest(given.encode(), panel_key.encode()):
+            raise HTTPException(status_code=401, detail="send the panel key as `Authorization: Bearer <key>`")
+        return panel
+
+    @app.get("/v1/panel/cases")
+    def panel_cases(limit: int = 30, authorization: Annotated[str | None, Header()] = None) -> dict:
+        return {"cases": panel_reader(authorization).cases(limit)}
+
+    @app.get("/v1/panel/cases/{case_id}")
+    def panel_case(case_id: str, authorization: Annotated[str | None, Header()] = None) -> dict:
+        found = panel_reader(authorization).case(case_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail="no such case")
+        return found
 
     return app

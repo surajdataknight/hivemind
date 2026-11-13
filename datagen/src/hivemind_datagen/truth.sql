@@ -14,6 +14,14 @@ create table if not exists truth.order_faults (
   expected jsonb not null   -- owed_paise, proven_by_records
 );
 
+-- accounts that share a device, an address or a upi id, with many claims (blueprint 7.4)
+create table if not exists truth.fraud_rings (
+  ring_id text primary key,
+  link_type text not null,  -- device, address, upi
+  shared text not null,     -- the device id, address id or upi id they share
+  members jsonb not null    -- customer ids
+);
+
 create table if not exists truth.generation_runs (
   run_id text primary key,
   seed bigint not null,

@@ -29,14 +29,17 @@ def build_service():
 
 def app():
     """for `uvicorn --factory hivemind_agents.cli:app`."""
+    from hivemind_agents import settings
     from hivemind_agents.api import create_app
+    from hivemind_agents.panel import PanelReader
 
-    return create_app(build_service())
+    return create_app(build_service(), PanelReader(settings.agent_conninfo()), settings.panel_key())
 
 
 def new_keys() -> str:
     return (f"HM_SESSION_SECRET={secrets.token_urlsafe(48)}\n"
-            f"HM_CASE_TOKEN_SECRET={secrets.token_urlsafe(48)}\n")
+            f"HM_CASE_TOKEN_SECRET={secrets.token_urlsafe(48)}\n"
+            f"HM_PANEL_KEY={secrets.token_urlsafe(48)}\n")
 
 
 def check_models() -> int:
@@ -65,7 +68,7 @@ def main() -> None:
     serve = sub.add_parser("serve", help="run the chat service")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
-    sub.add_parser("new-keys", help="print two new signing keys to paste into .env")
+    sub.add_parser("new-keys", help="print new signing keys and a panel key to paste into .env")
     sub.add_parser("check-models", help="check the model names in models.toml against the provider (calls google)")
     args = parser.parse_args()
 

@@ -8,6 +8,7 @@ members = [
     "hivemind-agents",
     "hivemind-backend",
     "hivemind-datagen",
+    "hivemind-evals",
 ]
 
 [[package]]
@@ -286,6 +287,7 @@ dependencies = [
     { name = "hivemind-agents" },
     { name = "hivemind-backend" },
     { name = "hivemind-datagen" },
+    { name = "hivemind-evals" },
 ]
 
 [package.dev-dependencies]
@@ -300,6 +302,7 @@ requires-dist = [
     { name = "hivemind-agents", editable = "agents" },
     { name = "hivemind-backend", editable = "backend" },
     { name = "hivemind-datagen", editable = "datagen" },
+    { name = "hivemind-evals", editable = "evals" },
 ]
 
 [package.metadata.requires-dev]
@@ -376,6 +379,27 @@ dependencies = [
 requires-dist = [
     { name = "hivemind-backend", editable = "backend" },
     { name = "psycopg", extras = ["binary"], specifier = "==3.3.8" },
+]
+
+[[package]]
+name = "hivemind-evals"
+version = "0.0.0"
+source = { editable = "evals" }
+dependencies = [
+    { name = "hivemind-agents" },
+    { name = "hivemind-backend" },
+    { name = "hivemind-datagen" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "hivemind-agents", editable = "agents" },
+    { name = "hivemind-backend", editable = "backend" },
+    { name = "hivemind-datagen", editable = "datagen" },
+    { name = "psycopg", extras = ["binary"], specifier = "==3.3.8" },
+    { name = "pydantic", specifier = "==2.14.3" },
 ]
 
 [[package]]

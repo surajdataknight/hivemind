@@ -20,7 +20,7 @@ from hivemind_backend import auth, cases, db, models, promotions
 from hivemind_backend.auth import Caller, scope
 from hivemind_backend.evidence import evidence_id
 
-API_VERSION = "0.3.0"
+API_VERSION = "0.5.0"
 MAX_WINDOW = timedelta(days=7)
 PACKED_OR_LATER = {"PACKED", "OUT_FOR_DELIVERY", "DELIVERED", "PARTIALLY_FULFILLED"}
 
@@ -390,6 +390,97 @@ def list_order_refunds(order_id: OrderId, conn: DbConn, who: Caller = scope("pay
     return evidenced(models.Refunds, models.RefundsResponse, {"order_id": order_id, "refunds": refunds})
 
 
+# support profile and risk signals: counted from the systems of record on each read, never edited by a model
+# (blueprint 6.2 l3, 7.4). counts only: no other customer's id, no free text
+
+CLAIM_TYPES = ("item_missing_or_wrong", "quality", "refund")
+WindowDays = Annotated[int, Query(ge=1, le=365, description="days back from the business's clock")]
+
+
+def account_age_days(conn: psycopg.Connection, customer_id: str, now: datetime) -> int:
+    row = conn.execute("select signup_at from customer.customers where customer_id = %s", (customer_id,)).fetchone()
+    if row is None:
+        raise not_found(f"customer {customer_id} does not exist")
+    return max(0, (now - row["signup_at"]).days)
+
+
+@app.get("/v1/me/support-profile", response_model=models.SupportProfileResponse, responses=ERRORS,
+         tags=["support"], operation_id="getSupportProfile",
+         summary="the token's customer's orders and earlier claims in a window, counted")
+def get_support_profile(conn: DbConn, window_days: WindowDays = 180, who: Caller = scope("history:read:self")):
+    now = sim_now(conn)
+    since = now - timedelta(days=window_days)
+    age = account_age_days(conn, who.customer_id, now)
+    orders = conn.execute(
+        "select count(*) as orders, count(*) filter (where status = 'DELIVERED') as delivered from orders.orders "
+        "where customer_id = %s and placed_at >= %s", (who.customer_id, since)).fetchone()
+    claims = conn.execute(
+        "select c.case_id, c.issue_type, c.created_at, c.updated_at, "
+        "coalesce((select sum(r.amount_paise) from refunds_wallet.refunds r where r.case_id = c.case_id), 0) "
+        "as refunded, (select t.status from support.tickets t where t.case_id = c.case_id) as ticket "
+        "from support.cases c where c.customer_id = %s and c.issue_type = any(%s) and c.created_at >= %s "
+        "and c.state in ('RESOLVED', 'CLOSED') order by c.updated_at desc, c.case_id desc",
+        (who.customer_id, list(CLAIM_TYPES), since)).fetchall()
+    open_cases = conn.execute(
+        "select count(*) as n from support.cases where customer_id = %s and state = any(%s)",
+        (who.customer_id, list(cases.OPEN_STATES))).fetchone()["n"]
+
+    def outcome(row: dict) -> str:
+        if row["ticket"] is not None:
+            return "decided_by_person"
+        return "refunded" if row["refunded"] > 0 else "turned_down"
+
+    data = {
+        "customer_id": who.customer_id, "window_days": window_days, "since": since, "account_age_days": age,
+        "orders": orders["orders"], "delivered_orders": orders["delivered"], "claims": len(claims),
+        "claims_last_30_days": sum(1 for c in claims if c["created_at"] >= now - timedelta(days=30)),
+        "claims_by_type": {t: sum(1 for c in claims if c["issue_type"] == t) for t in CLAIM_TYPES},
+        "refunded_by_rules": sum(1 for c in claims if outcome(c) == "refunded"),
+        "turned_down": sum(1 for c in claims if outcome(c) == "turned_down"),
+        "escalated": sum(1 for c in claims if c["ticket"] is not None),
+        "escalations_approved": sum(1 for c in claims if c["ticket"] == "APPROVED"),
+        "escalations_rejected": sum(1 for c in claims if c["ticket"] == "REJECTED"),
+        "refunded_paise": sum(c["refunded"] for c in claims), "open_cases": open_cases,
+        "last_resolutions": [{"issue_type": c["issue_type"], "outcome": outcome(c), "refunded_paise": c["refunded"],
+                              "closed_at": c["updated_at"]} for c in claims[:3]],
+    }
+    return evidenced(models.SupportProfile, models.SupportProfileResponse, data)
+
+
+# for each kind of link: the other accounts that share it with the customer
+LINKED = {
+    "device": "select distinct b.customer_id from identity.sessions a join identity.sessions b "
+              "on b.device_id = a.device_id and b.customer_id <> a.customer_id where a.customer_id = %(me)s",
+    "address": "select distinct b.customer_id from customer.addresses a join customer.addresses b "
+               "on lower(b.line1) = lower(a.line1) and b.pincode = a.pincode and b.customer_id <> a.customer_id "
+               "where a.customer_id = %(me)s",
+    "upi": "select distinct b.customer_id from payments.payment_intents a join payments.payment_intents b "
+           "on b.instrument_ref = a.instrument_ref and b.customer_id <> a.customer_id "
+           "where a.customer_id = %(me)s and a.method = 'upi' and b.method = 'upi'",
+}
+
+
+@app.get("/v1/me/risk-signals", response_model=models.RiskSignalsResponse, responses=ERRORS, tags=["risk"],
+         operation_id="getRiskSignals",
+         summary="how many other accounts share a device, an address or a upi id with the token's customer")
+def get_risk_signals(conn: DbConn, window_days: WindowDays = 180, who: Caller = scope("risk:read")):
+    now = sim_now(conn)
+    since = now - timedelta(days=window_days)
+    links = []
+    for link_type, linked in LINKED.items():
+        row = conn.execute(
+            f"with linked as ({linked}) select (select count(*) from linked) as accounts, "
+            "count(distinct c.customer_id) as with_claims, count(c.case_id) as claims "
+            "from linked l join support.cases c on c.customer_id = l.customer_id "
+            "and c.issue_type = any(%(types)s) and c.created_at >= %(since)s",
+            {"me": who.customer_id, "types": list(CLAIM_TYPES), "since": since}).fetchone()
+        links.append({"link_type": link_type, "accounts": row["accounts"], "accounts_with_claims": row["with_claims"],
+                      "claims": row["claims"]})
+    data = {"customer_id": who.customer_id, "window_days": window_days, "since": since,
+            "account_age_days": account_age_days(conn, who.customer_id, now), "links": links}
+    return evidenced(models.RiskSignals, models.RiskSignalsResponse, data)
+
+
 # promotions module
 
 OfferCode = Annotated[str, Path(pattern=r"^[A-Z0-9]{3,20}$", examples=["SAVE10"])]
@@ -464,6 +555,19 @@ def evaluate_promotion(
         "applied_discount_paise": applied, "difference_paise": due - applied,
     }
     return evidenced(models.PromotionEvaluation, models.PromotionEvaluationResponse, data)
+
+
+# policy module: the business's policy and sop text, active versions only, whole, by issue type (blueprint c16)
+
+
+@app.get("/v1/policy/sections", response_model=models.PolicyResponse, responses=ERRORS, tags=["policy"],
+         operation_id="listPolicySections", summary="the active policy and sop sections for one issue type, whole")
+def list_policy_sections(issue_type: models.IssueType, conn: DbConn, who: Caller = scope("policy:read")):
+    rows = conn.execute(
+        "select s.policy_id, s.version, s.title, s.body from policy.map m "
+        "join policy.sections s on s.policy_id = m.policy_id and s.active "
+        "where m.issue_type = %s order by s.policy_id", (issue_type,)).fetchall()
+    return evidenced(models.PolicyBody, models.PolicyResponse, {"issue_type": issue_type, "sections": rows})
 
 
 # support module: cases. the legal moves are in cases.py; every open, attach and move is kept in case_events

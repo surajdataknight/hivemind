@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Session } from "./api";
 import { Chat } from "./Chat";
+import { Panel } from "./Panel";
 import { SignIn } from "./SignIn";
 
 const SESSION_KEY = "hivemind.session";
@@ -17,6 +18,11 @@ function savedSession(): Session | null {
 }
 
 export function App() {
+  // /panel is the scenario panel; every other path is the customer chat
+  return window.location.pathname.startsWith("/panel") ? <Panel /> : <CustomerChat />;
+}
+
+function CustomerChat() {
   const [session, setSession] = useState<Session | null>(savedSession);
 
   const signedIn = (next: Session) => {

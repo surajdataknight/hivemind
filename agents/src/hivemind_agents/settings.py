@@ -7,6 +7,7 @@ from importlib import resources
 
 BUSINESS_NAME = "HiveMart"
 MIN_KEY_BYTES = 32
+TIMEOUT_S = 20.0  # a job's model call limit when models.toml gives none
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,12 @@ class Job:
     provider: str
     model: str
     temperature: float
+    timeout_s: float = TIMEOUT_S
+    retry_timeouts: bool = True  # false: one timeout ends the call (a slow model is not asked again)
+    total_s: float | None = None  # all tries of one call together, waits included; none: no shared limit
+    fallback: str | None = None   # the model asked at once when this job's model says it is busy (record 013)
+    fallback_provider: str | None = None  # the fallback's provider; none: the job's own
+    busy_waits: tuple[float, ...] | None = None  # seconds before each retry after a busy answer; none: the router's
 
 
 @dataclass(frozen=True)
@@ -35,10 +42,16 @@ def load_models(text: str | None = None) -> ModelSettings:
     providers = data.get("providers", {})
     jobs = {}
     for name, row in data.get("jobs", {}).items():
-        if row["provider"] not in providers:
-            raise ValueError(f"job {name!r} names the provider {row['provider']!r}, which models.toml does not list")
+        for key in ("provider", "fallback_provider"):
+            if key in row and row[key] not in providers:
+                raise ValueError(f"job {name!r} names the provider {row[key]!r}, which models.toml does not list")
         jobs[name] = Job(name=name, provider=row["provider"], model=row["model"],
-                         temperature=float(row.get("temperature", 0.0)))
+                         temperature=float(row.get("temperature", 0.0)),
+                         timeout_s=float(row.get("timeout_s", TIMEOUT_S)),
+                         retry_timeouts=bool(row.get("retry_timeouts", True)),
+                         total_s=float(row["total_s"]) if "total_s" in row else None,
+                         fallback=row.get("fallback"), fallback_provider=row.get("fallback_provider"),
+                         busy_waits=tuple(float(w) for w in row["busy_waits"]) if "busy_waits" in row else None)
     return ModelSettings(jobs=jobs, key_envs={name: row["key_env"] for name, row in providers.items()})
 
 
@@ -55,6 +68,15 @@ def signing_key(name: str) -> str:
         raise RuntimeError(f"{name} is shorter than {MIN_KEY_BYTES} characters; make a new pair with "
                            "`hm-agents new-keys`")
     return key
+
+
+def panel_key() -> str | None:
+    """the scenario panel's key, or None when it is not set (the panel is then off)."""
+    key = os.environ.get("HM_PANEL_KEY")
+    if key and len(key.encode()) < MIN_KEY_BYTES:
+        raise RuntimeError(f"HM_PANEL_KEY is shorter than {MIN_KEY_BYTES} characters; make one with "
+                           "`hm-agents new-keys`")
+    return key or None
 
 
 def backend_url() -> str:

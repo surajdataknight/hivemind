@@ -4,6 +4,7 @@ one client per run, bound to that run's case token. the customer is whoever the 
 customer id.
 """
 
+import copy
 from typing import Any, Callable, Protocol
 
 from hivemind_agents import evidence
@@ -32,9 +33,22 @@ class BackendClient:
         self._tracer = tracer
         self._ledger = ledger
         self.case_id: str | None = None  # the case being worked: every read is kept as proof for it
+        self._closed = False
+
+    def for_case(self, case_id: str) -> "BackendClient":
+        """a client of its own for one check: its reads stay proof for this case, whatever the run works on next."""
+        mine = copy.copy(self)
+        mine.case_id, mine._closed = case_id, False
+        return mine
+
+    def close(self) -> None:
+        """no further reads: a check given up on (timed out or cancelled) can no longer add proof to the case."""
+        self._closed = True
 
     def _call(self, operation: str, method: str, path: str, *, params: dict | None = None,
               body: dict | None = None) -> dict:
+        if self._closed:
+            raise BackendError(f"{operation}: the check was stopped")
         headers = {**self._auth, **trace_headers()}
         if self.case_id:
             headers["X-Case-Id"] = self.case_id
@@ -53,7 +67,7 @@ class BackendClient:
                 span.set_attribute("hivemind.evidence_id", data["evidence_id"])
                 if not evidence.matches(data):
                     raise BackendError(f"{operation}: the evidence id does not match the body")
-                if self.case_id and self._ledger:
+                if self.case_id and self._ledger and not self._closed:
                     self._ledger(self.case_id, operation, data)
         if response.status_code == 404:  # an answer, not a failure: raised outside the span
             raise NotFound(operation)
@@ -79,6 +93,41 @@ class BackendClient:
         except NotFound:
             return None  # no delivery partner assigned yet
 
+    def proof_of_delivery(self, order_id: str) -> dict | None:
+        try:
+            return self._call("getProofOfDelivery", "GET", f"/v1/orders/{order_id}/pod")
+        except NotFound:
+            return None  # not handed over yet
+
+    def partner_notes(self, order_id: str) -> dict:
+        return self._call("listPartnerNotes", "GET", f"/v1/orders/{order_id}/partner-notes")
+
+    # store and inventory
+    def scans(self, order_id: str) -> dict:
+        return self._call("getOrderScans", "GET", f"/v1/orders/{order_id}/scans")
+
+    def store_incidents(self, store_id: str, since: str, until: str) -> dict:
+        return self._call("listStoreIncidents", "GET", f"/v1/stores/{store_id}/incidents",
+                          params={"since": since, "until": until})
+
+    def stock_events(self, store_id: str, sku: str, since: str, until: str) -> dict:
+        return self._call("listStockEvents", "GET", f"/v1/stores/{store_id}/stock-events",
+                          params={"sku": sku, "since": since, "until": until})
+
+    # payments and refunds
+    def payments(self, order_id: str) -> dict:
+        return self._call("listOrderPayments", "GET", f"/v1/orders/{order_id}/payments")
+
+    def refunds(self, order_id: str) -> dict:
+        return self._call("listOrderRefunds", "GET", f"/v1/orders/{order_id}/refunds")
+
+    # the customer's support profile and risk signals: counts only
+    def support_profile(self, window_days: int = 180) -> dict:
+        return self._call("getSupportProfile", "GET", "/v1/me/support-profile", params={"window_days": window_days})
+
+    def risk_signals(self, window_days: int = 180) -> dict:
+        return self._call("getRiskSignals", "GET", "/v1/me/risk-signals", params={"window_days": window_days})
+
     # promotions
     def my_redemptions(self, limit: int = 20) -> dict:
         return self._call("listMyRedemptions", "GET", "/v1/me/redemptions", params={"limit": limit})
@@ -89,6 +138,10 @@ class BackendClient:
 
     def offer(self, code: str) -> dict:
         return self._call("getOffer", "GET", f"/v1/promotions/offers/{code}")
+
+    # policy
+    def policy_sections(self, issue_type: str) -> dict:
+        return self._call("listPolicySections", "GET", "/v1/policy/sections", params={"issue_type": issue_type})
 
     # cases
     def open_case(self, case_type: str, order_id: str | None) -> dict:

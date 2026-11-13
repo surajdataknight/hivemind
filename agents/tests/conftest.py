@@ -56,13 +56,8 @@ def model(live):
     return ScriptedModel()
 
 
-@pytest.fixture
-def clean_chat_state(test_db, test_db_name):
-    """no cases or chats left over from another test."""
-    with db.connect("admin", dbname=test_db_name) as conn:
-        conn.execute("truncate support.cases cascade")
-        conn.execute("truncate agent.pii_vault, agent.messages, agent.conversations, agent.case_leases, "
-                     "agent.evidence_ledger, agent.findings")
+# the cases a test opened (the same rule as clean_chat_state in the root conftest)
+MADE_IN_TESTS = "select case_id from support.cases where created_at >= (select now from public.sim_clock)"
 
 
 @pytest.fixture
@@ -72,7 +67,7 @@ def service(request, clean_chat_state, backend_http, tracer, model, live, live_p
     use_real_models = live and request.node.get_closest_marker("live_capable") is not None
     verifier = IdentityVerifier(settings.signing_key("HM_SESSION_SECRET"),
                                 settings.signing_key("HM_CASE_TOKEN_SECRET"))
-    providers = None if use_real_models else {"google": lambda: model}
+    providers = None if use_real_models else {"google": lambda: model, "groq": lambda: model}
     deps = Deps(http=backend_http, llm=ModelRouter(settings.load_models(), tracer, providers),
                 store=ChatStore(settings.agent_conninfo()), tracer=tracer, verifier=verifier)
     yield ChatService(deps)
@@ -192,7 +187,8 @@ class Data:
         from psycopg.rows import dict_row
 
         with db.connect("admin", dbname=dbname, row_factory=dict_row) as conn:
-            return conn.execute("select * from support.cases order by created_at, case_id").fetchall()
+            return conn.execute(f"select * from support.cases where case_id in ({MADE_IN_TESTS}) "
+                                "order by created_at, case_id").fetchall()
 
 
 @pytest.fixture(scope="session")

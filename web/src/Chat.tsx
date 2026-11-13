@@ -124,11 +124,14 @@ export function Chat({ session, onSignOut }: { session: Session; onSignOut: () =
         {chat.messages.map((message) => (
           <div key={message.key} className={`bubble ${message.role}`}>
             {message.writing && !message.text ? (
-              <span className="typing" aria-label="HiveMind is working on it">
-                <i />
-                <i />
-                <i />
-              </span>
+              <>
+                <span className="typing" aria-label="HiveMind is working on it">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                {message.status && <span className="progress">{message.status}…</span>}
+              </>
             ) : (
               message.text
             )}

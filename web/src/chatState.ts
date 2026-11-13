@@ -8,6 +8,7 @@ export type Message = {
   text: string;
   chips: Chip[];
   writing: boolean; // an assistant reply that is still arriving
+  status: string; // while it is still arriving: what is being looked at, in the service's fixed words
 };
 
 export type ChatState = {
@@ -30,6 +31,7 @@ const fromServer = (m: ServerMessage): Message => ({
   text: m.text,
   chips: m.chips,
   writing: false,
+  status: "",
 });
 
 function updateDraft(state: ChatState, change: (draft: Message) => Message): ChatState {
@@ -50,12 +52,15 @@ export function chatReducer(state: ChatState, action: Action): ChatState {
         error: null,
         messages: [
           ...state.messages,
-          { key: `c${action.clientMsgId}`, role: "customer", text: action.text, chips: [], writing: false },
-          { key: `a${action.clientMsgId}`, role: "assistant", text: "", chips: [], writing: true },
+          { key: `c${action.clientMsgId}`, role: "customer", text: action.text, chips: [], writing: false, status: "" },
+          { key: `a${action.clientMsgId}`, role: "assistant", text: "", chips: [], writing: true, status: "" },
         ],
       };
     case "event": {
       const event = action.event;
+      // the latest check to start is what the customer sees; a finish changes nothing on its own
+      if (event.type === "progress")
+        return event.state === "started" ? updateDraft(state, (d) => ({ ...d, status: event.text })) : state;
       if (event.type === "token") return updateDraft(state, (d) => ({ ...d, text: d.text + event.text }));
       if (event.type === "replace") return updateDraft(state, (d) => ({ ...d, text: event.text }));
       if (event.type === "done") {

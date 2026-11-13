@@ -47,7 +47,11 @@ TABLES = [
     "delivery.partner_notes",
     "promotions.offers",
     "promotions.redemptions",
+    "support.cases",
+    "support.case_events",
+    "support.tickets",
     "truth.order_faults",
+    "truth.fraud_rings",
     "truth.generation_runs",
 ]
 
@@ -58,7 +62,11 @@ FAULTS = {
     "duplicate_capture": ("duplicate",),
     "coupon_misapplied": ("wrong_amount", "wrongly_rejected"),
     "conflicting_records": ("item_missing", "item_delivered"),
+    "fraud_ring": ("false_claim",),       # a ring member says an item is missing; the records show it delivered
+    "injected_note": ("partner_note",),   # a partner note that tries to give an order; it must change nothing
 }
+LINK_TYPES = ("device", "address", "upi")  # what a fraud ring's accounts share, one kind per ring, in turn
+CLAIM_TYPES = ("item_missing_or_wrong", "quality", "refund")
 
 # share of the day's orders in each ist hour (dinner peak)
 HOURLY = [0.5, 0.2, 0.1, 0.1, 0.1, 0.2, 1.0, 2.5, 3.5, 3.0, 2.5, 2.5, 3.0, 3.0, 2.5, 2.0, 2.5, 3.5, 5.0, 7.0, 8.0,
@@ -79,6 +87,9 @@ class Config:
     orders_per_day: int = 150
     faults_per_type: int = 10
     live_orders: int = 8  # extra orders placed in the last 18 minutes, so some are always on their way at as_of
+    fraud_rings: int = 3  # groups of accounts sharing a device, an address or a upi id, with many claims
+    ring_size: int = 3
+    claim_rate: float = 0.12  # share of other customers with an earlier claim (closed case) on a past order
 
     @property
     def as_of(self) -> datetime:
@@ -160,6 +171,10 @@ class Generator:
         self.counters: dict[str, int] = defaultdict(int)
         self.orders: list[OrderRec] = []
         self.stockouts: dict[tuple[str, str], list[tuple[datetime, datetime]]] = defaultdict(list)
+        # fraud rings and earlier claims draw from a stream of their own, so the orders and faults come out as before
+        self.side = random.Random(f"{seed}:claims")
+        self.rings: list[dict] = []
+        self.ring_of: dict[str, str] = {}  # customer id -> ring id
 
     # helpers
 
@@ -581,3 +596,127 @@ class Generator:
                 "trip_id": rec.trip["trip_id"], "seq": seq, "at": start + timedelta(seconds=round(t)),
                 "lat": round(a[0] + (b[0] - a[0]) * frac + self.rng.uniform(-jitter, jitter), 6),
                 "lng": round(a[1] + (b[1] - a[1]) * frac + self.rng.uniform(-jitter, jitter), 6)}))
+
+    # fraud rings and earlier claims (blueprint 7.4, 10.7)
+
+    def delivered_by_customer(self, skip: frozenset[str] | set[str] = frozenset(),
+                              settled_before: datetime | None = None) -> dict[str, list[OrderRec]]:
+        found: dict[str, list[OrderRec]] = defaultdict(list)
+        for rec in self.orders:
+            order = rec.order
+            if order["status"] != "DELIVERED" or order["order_id"] in skip:
+                continue
+            if settled_before is not None and order["delivered_at"] > settled_before:
+                continue
+            found[order["customer_id"]].append(rec)
+        return found
+
+    def build_fraud_rings(self) -> None:
+        """groups of regular accounts that share a device, a delivery address or a upi id (one kind per ring). their
+        claims come in build_past_claims; a member may also make a false claim (faults)."""
+        rng, size = self.side, self.cfg.ring_size
+        delivered = self.delivered_by_customer()
+        candidates = sorted(c["customer_id"] for c in self.customers
+                            if c["persona"] == "regular" and len(delivered[c["customer_id"]]) >= 4)
+        rng.shuffle(candidates)
+        if len(candidates) < self.cfg.fraud_rings * size:
+            raise GenerationError("not enough customers with 4 delivered orders for the fraud rings; use a bigger config")
+        customers = {c["customer_id"]: c for c in self.customers}
+        sessions = {s["customer_id"]: s for s in self.t["identity.sessions"]}
+        for n in range(self.cfg.fraud_rings):
+            members = sorted(candidates[n * size:(n + 1) * size])
+            link = LINK_TYPES[n % len(LINK_TYPES)]
+            first = customers[members[0]]
+            if link == "device":
+                shared = sessions[members[0]]["device_id"]
+                for member in members[1:]:
+                    sessions[member]["device_id"] = shared
+            elif link == "address":
+                home = first["addresses"][0]
+                shared = home["address_id"]
+                for member in members[1:]:
+                    copy = {**home, "address_id": self.next_id("ADDR-", 5), "customer_id": member, "label": "Other"}
+                    self.add("customer.addresses", copy)
+                    customers[member]["addresses"].append(copy)
+            else:
+                shared = first["instruments"]["upi"]
+                for member in members:
+                    intents = [i for rec in self.orders if rec.order["customer_id"] == member for i in rec.intents]
+                    if not any(i["method"] == "upi" for i in intents):
+                        intents[-1]["method"] = "upi"
+                    for intent in intents:
+                        if intent["method"] == "upi":
+                            intent["instrument_ref"] = shared
+                    customers[member]["instruments"]["upi"] = shared
+            ring_id = f"RING-{n + 1:02d}"
+            self.rings.append({"ring_id": ring_id, "link_type": link, "members": members})
+            self.ring_of.update({member: ring_id for member in members})
+            self.add("truth.fraud_rings", {"ring_id": ring_id, "link_type": link, "shared": shared,
+                                           "members": members})
+
+    def build_past_claims(self, fault_orders: set[str]) -> None:
+        """closed support cases on delivered orders: most customers have none, some one or two, ring members many
+        (blueprint 3.5: claims on most orders). never on an order that carries a fault."""
+        rng, as_of = self.side, self.cfg.as_of
+        delivered = self.delivered_by_customer(skip=fault_orders, settled_before=as_of - timedelta(hours=2))
+        for customer in self.customers:
+            recs = delivered[customer["customer_id"]]
+            if not recs:
+                continue
+            ring = customer["customer_id"] in self.ring_of
+            if ring:
+                picks = rng.sample(recs, min(len(recs), max(2, round(len(recs) * 0.75))))
+            else:
+                draw = rng.random()
+                if draw >= self.cfg.claim_rate:
+                    continue
+                picks = rng.sample(recs, 2 if draw < self.cfg.claim_rate / 4 and len(recs) >= 2 else 1)
+            for rec in sorted(picks, key=lambda r: (r.order["placed_at"], r.order["order_id"])):
+                self.add_past_claim(rec, ring)
+
+    def add_past_claim(self, rec: OrderRec, ring: bool) -> None:
+        """one closed case with its history: refunded by the rules, turned down (the records did not support it), or
+        decided by a person on a ticket. a refund made for it carries the case id."""
+        rng, order = self.side, rec.order
+        issue = "item_missing_or_wrong" if ring else rng.choices(CLAIM_TYPES, weights=[6, 3, 1])[0]
+        outcome = rng.choices(["refunded", "rejected", "escalated"], weights=[6, 1, 3] if ring else [7, 2, 1])[0]
+        approved = outcome == "escalated" and rng.random() < 0.5
+        path = ["INVESTIGATING", "DECIDING"]
+        if outcome == "refunded":
+            path += ["ACTIONING", "RESOLVED"]
+        elif outcome == "rejected":
+            path += ["RESOLVED"]
+        else:
+            path += ["ESCALATED"] + (["ACTIONING"] if approved else []) + ["RESOLVED"]
+        path.append("CLOSED")
+        resolved_why = {"refunded": "refunded", "rejected": "not_supported_by_records"}.get(outcome,
+                                                                                         "decided_by_person")
+        case_id = f"CASE-{rng.getrandbits(48):012X}"
+        at = order["delivered_at"] + secs(rng.uniform(10, 90))
+        opened = at
+        self.add("support.case_events", {"case_id": case_id, "seq": 1, "type": "opened", "from_state": None,
+                                         "to_state": "OPEN", "reason": None, "at": at})
+        state, ticket = "OPEN", None
+        for seq, to in enumerate(path, start=2):
+            at = at + secs(rng.uniform(1, 4))
+            if to == "ACTIONING":
+                line = rng.choice(rec.lines)
+                self.add("refunds_wallet.refunds", {
+                    "refund_id": self.next_id("RF-", 6), "order_id": order["order_id"],
+                    "amount_paise": line["qty"] * line["unit_paise"], "destination": rng.choice(["source", "wallet"]),
+                    "status": "COMPLETED", "reason": f"{issue}_claim", "case_id": case_id, "decision_record_id": None,
+                    "created_at": at})
+            if to == "ESCALATED":
+                ticket = self.add("support.tickets", {
+                    "ticket_id": self.next_id("TKT-", 6), "case_id": case_id, "status": "OPEN", "priority": "normal",
+                    "summary": "earlier claim: " + issue.replace("_", " "), "created_at": at, "updated_at": at})
+            self.add("support.case_events", {"case_id": case_id, "seq": seq, "type": "moved", "from_state": state,
+                                             "to_state": to, "reason": resolved_why if to == "RESOLVED" else None,
+                                             "at": at})
+            state = to
+        if ticket is not None:
+            ticket["status"] = "APPROVED" if approved else "REJECTED"
+            ticket["updated_at"] = at
+        self.add("support.cases", {"case_id": case_id, "customer_id": order["customer_id"],
+                                   "order_id": order["order_id"], "issue_type": issue, "state": "CLOSED",
+                                   "created_at": opened, "updated_at": at})

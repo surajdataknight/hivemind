@@ -47,7 +47,8 @@ def test_error_bodies_are_problem_json():
 
 
 ALL_SCOPES = ["profile:read:self", "orders:read:self", "delivery:read:self", "payments:read:self",
-              "inventory:read", "promotions:read:self", "cases:write:self"]
+              "inventory:read", "promotions:read:self", "cases:write:self", "policy:read", "history:read:self",
+              "risk:read"]
 
 
 def case_token(customer_id: str, scopes=ALL_SCOPES, minutes: float = 10, age_minutes: float = 0,
@@ -133,6 +134,10 @@ def any_customer(t) -> str:
     return t["orders.orders"][0]["customer_id"]
 
 
+def ring_member(t) -> str:
+    return t["truth.fraud_rings"][0]["members"][0]
+
+
 def rejected(t) -> dict:
     return next(r for r in t["promotions.redemptions"] if r["status"] == "rejected")
 
@@ -160,9 +165,12 @@ CASES = {
     ("GET", "/v1/orders/{order_id}/refunds"): of_order(
         lambda t: t["refunds_wallet.refunds"][0]["order_id"], "/refunds"),
     ("GET", "/v1/promotions/offers/{code}"): lambda t: ("/v1/promotions/offers/SAVE10", any_customer(t), None),
+    ("GET", "/v1/policy/sections"): lambda t: ("/v1/policy/sections", any_customer(t), None),
     ("GET", "/v1/me/redemptions"): lambda t: ("/v1/me/redemptions", rejected(t)["customer_id"], None),
     ("GET", "/v1/orders/{order_id}/promotion-evaluation"): of_order(
         lambda t: rejected(t)["order_id"], "/promotion-evaluation"),
+    ("GET", "/v1/me/support-profile"): lambda t: ("/v1/me/support-profile", ring_member(t), None),
+    ("GET", "/v1/me/risk-signals"): lambda t: ("/v1/me/risk-signals", ring_member(t), None),
     ("POST", "/v1/cases"): lambda t: ("/v1/cases", any_customer(t), {
         "issue_type": "where_is_my_order", "order_id": t["orders.orders"][0]["order_id"]}),
     ("POST", "/v1/cases/{case_id}/state"): lambda t: (None, any_customer(t), {"state": "INVESTIGATING"}),
@@ -172,6 +180,7 @@ PARAMS = {
     "/v1/stores/{store_id}/stock-events": lambda t: {"sku": t["store_inventory.stock_events"][0]["sku"],
                                                      **window(t, t["store_inventory.stock_events"][0]["at"])},
     "/v1/orders/{order_id}/promotion-evaluation": lambda t: {"code": rejected(t)["code"]},
+    "/v1/policy/sections": lambda t: {"issue_type": "item_missing_or_wrong"},
 }
 
 
@@ -694,3 +703,76 @@ def test_a_resolved_case_reopens_only_when_no_other_case_about_it_is_open(client
     assert second["case_id"] in body["detail"]
     force_state(second["case_id"], "CLOSED")
     assert client.post(move, headers=who, json={"state": "REOPENED"}).json()["state"] == "REOPENED"
+
+
+# support profile and risk signals (phase 2.4)
+
+
+def claim_cases_of(customer_id):
+    """the customer's closed claim cases as the database holds them: the generated ones, and any a test resolved."""
+    with db.connect("admin", dbname=os.environ["HM_DB_NAME"], row_factory=psycopg.rows.dict_row) as conn:
+        return conn.execute("select * from support.cases where customer_id = %s and issue_type = any(%s) "
+                            "and state in ('RESOLVED', 'CLOSED')",
+                            (customer_id, ["item_missing_or_wrong", "quality", "refund"])).fetchall()
+
+
+@pytest.mark.db
+def test_support_profile_counts_the_generated_claims(client, test_db):
+    for ring in test_db["truth.fraud_rings"]:
+        for member in ring["members"]:
+            body = check_body("/v1/me/support-profile", client.get("/v1/me/support-profile", headers=bearer(member)))
+            mine = claim_cases_of(member)
+            assert body["claims"] == len(mine) >= 2
+            assert sum(body["claims_by_type"].values()) == body["claims"]
+            assert (body["refunded_by_rules"] + body["turned_down"] + body["escalated"]) == body["claims"]
+            assert body["escalations_approved"] + body["escalations_rejected"] == body["escalated"]
+            refunds = [r for r in test_db["refunds_wallet.refunds"] if r["case_id"] in {c["case_id"] for c in mine}]
+            assert body["refunded_paise"] == sum(r["amount_paise"] for r in refunds)
+            delivered = [o for o in test_db["orders.orders"] if o["customer_id"] == member
+                         and o["status"] == "DELIVERED"]
+            assert body["delivered_orders"] == len(delivered)
+            assert len(body["last_resolutions"]) == min(3, len(mine))
+            stamps = [r["closed_at"] for r in body["last_resolutions"]]
+            assert stamps == sorted(stamps, reverse=True)
+
+
+@pytest.mark.db
+def test_a_customer_with_no_claims_has_an_empty_profile(client, test_db):
+    claimed = {c["customer_id"] for c in test_db["support.cases"]}
+    customer = next(o["customer_id"] for o in test_db["orders.orders"] if o["customer_id"] not in claimed)
+    body = check_body("/v1/me/support-profile", client.get("/v1/me/support-profile", headers=bearer(customer)))
+    assert body["claims"] == body["refunded_paise"] == body["escalated"] == 0
+    assert body["last_resolutions"] == [] and body["orders"] >= 1
+
+
+@pytest.mark.db
+def test_risk_signals_find_each_ring_and_only_counts(client, test_db):
+    for ring in test_db["truth.fraud_rings"]:
+        for member in ring["members"]:
+            response = client.get("/v1/me/risk-signals", headers=bearer(member))
+            body = check_body("/v1/me/risk-signals", response)
+            links = {row["link_type"]: row for row in body["links"]}
+            assert set(links) == {"device", "address", "upi"}
+            shared = links[ring["link_type"]]
+            assert shared["accounts"] == len(ring["members"]) - 1
+            assert shared["accounts_with_claims"] == len(ring["members"]) - 1 and shared["claims"] >= 2
+            others = set(ring["members"]) - {member}
+            assert not any(other in response.text for other in others)  # counts only, never another id
+
+
+@pytest.mark.db
+def test_an_account_outside_the_rings_shares_nothing(client, test_db):
+    ring = {m for r in test_db["truth.fraud_rings"] for m in r["members"]}
+    customer = next(c["customer_id"] for c in test_db["customer.customers"] if c["customer_id"] not in ring)
+    body = check_body("/v1/me/risk-signals", client.get("/v1/me/risk-signals", headers=bearer(customer)))
+    assert all(row["accounts"] == 0 for row in body["links"])
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("path,needed", [("/v1/me/support-profile", "history:read:self"),
+                                         ("/v1/me/risk-signals", "risk:read")])
+def test_profile_and_signals_need_their_scope(path, needed, client, test_db):
+    member = ring_member(test_db)
+    others = [s for s in ALL_SCOPES if s != needed]
+    check_problem(path, client.get(path, headers=bearer(member, scopes=others)), 403)
+    check_problem(path, client.get(path, params={"window_days": 0}, headers=bearer(member)), 422)
